@@ -28,7 +28,8 @@
         <!-- <script type="module" src = "stateManager.js"></script> -->
         <script type="module">
             // TESTING: remove this
-            const mode = 'old';
+            const mode = 'new';
+            console.log(`MODE SET TO: ${mode}`);
 
             import * as THREE from 'three/webgpu';
             import {globalState, setupGui, loadFile, gui} from './stateManager.js';
@@ -79,6 +80,9 @@
                 // CONTROLS
 
                 controls = new OrbitControls(camera, renderer.domElement);
+                //TESTING: remove this
+                controls.autoRotate = true;
+                controls.autoRotateSpeed = 2.0;
 
                 // EVENTS
 
@@ -183,13 +187,15 @@
             }
 
             function render() {
-                // console.time('render');
                 timer.update()
                 const delta = timer.getDelta();
                 time += delta;
+
+                // TESTING: remove this
+                controls.update();
+
                 // render
                 renderer.render( scene, camera );
-                // console.timeEnd('render');
             }
 
             init();

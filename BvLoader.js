@@ -1,5 +1,7 @@
 import {FileLoader, Float32BufferAttribute, Group, Loader} from 'three/webgpu';
 import {BvPatch} from './BvPatch.js';
+import {BvQuad} from './BvQuad.js';
+import {BvGroup} from './BvGroup.js';
 
 /**
  * A loader for the Bv format.
@@ -273,11 +275,12 @@ class BvLoader extends Loader {
                         const deg = Number(input[idx++]);
                         const numControlPoints = ((deg+2) * (deg+1)) / 2;
                         const cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
-                        currentGroup.patches.push({
-                            patchType: "TRI",
-                            deg: deg,
-                            cpBuffer: cpBuffer,
-                        });
+                        currentGroup.patches.push(new BvTri(patchType, deg, cpBuffer));
+                        // currentGroup.patches.push({
+                        //     patchType: "TRI",
+                        //     deg: deg,
+                        //     cpBuffer: cpBuffer,
+                        // });
 
                         break;
                     }
@@ -293,12 +296,13 @@ class BvLoader extends Loader {
 
                         const numControlPoints = (uDeg + 1) * (vDeg + 1);
                         const cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
-                        currentGroup.patches.push({
-                            patchType: "QUAD",
-                            uDeg: uDeg,
-                            vDeg: vDeg,
-                            cpBuffer: cpBuffer,
-                        });
+                        currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer));
+                        // currentGroup.patches.push({
+                        //     patchType: "QUAD",
+                        //     uDeg: uDeg,
+                        //     vDeg: vDeg,
+                        //     cpBuffer: cpBuffer,
+                        // });
 
                         break;
                     }
@@ -330,7 +334,8 @@ class BvLoader extends Loader {
         const bvFile = new Group();
         for (const group of groups) {
             // TODO
-            console.log(group.name, group.patches)
+            console.log(group.name, group.patches);
+            bvFile.add(new BvGroup(group.name, group.patches, this.renderer));
         }
         return bvFile;
     }
