@@ -12,6 +12,8 @@ function Chunk() {
         // for the 7 subdiv. levels, 0 to 6
         indexBuffers: new Array(7),
         mesh: new THREE.Mesh(),
+        // will be assigned to a storageBufferAttribute once needed size is known
+        positionStorage: -1,
     };
 }
 
@@ -33,6 +35,8 @@ export class BvGroup extends THREE.Group {
         this.chunks = [];
         this.chunks.push(Chunk());
 
+        ////////// assign each patch a location in the large chunk buffer //////////
+
         // 134,217,728 bytes (128MiB) is the smallest guaranteed storage buffer size
         // so split up data into chunks NO LARGER THAN 128MiB
         // TODO: check for greater device-specific alloc. limit during initialization
@@ -42,7 +46,7 @@ export class BvGroup extends THREE.Group {
         for (const patch of patches) {
             const byteSize = patch.getMemNeededBytes();
             if (byteOffset + byteSize > maxChunkSize) {
-                console.log("NEW CHUNK!");
+                // console.log("NEW CHUNK!");
                 this.chunks.at(-1).byteSize = byteOffset;
 
                 byteOffset = 0;
@@ -54,19 +58,18 @@ export class BvGroup extends THREE.Group {
             this.chunks.at(-1).byteSize += byteSize;
 
             byteOffset += byteSize;
-            console.log(`${maxChunkSize} vs ${byteOffset}`);
+            // console.log(`${maxChunkSize} vs ${byteOffset}`);
         }
-        console.log(`First patch in chunk: ${this.chunks[0].patches[0]}`);
 
+        // TESTING: remove this
         let lens = 0;
         for (const chunk of this.chunks) {
             this.add(chunk.mesh);
-            // TESTING
             lens += chunk.patches.length;
         }
-        console.log(`total len: ${lens}`);
+        console.log(`Total # of patches: ${lens}`);
 
-        // initialize all the chunks
+        ////////// initialize chunks, and the patches they contain //////////
         const initComputeNodes = new Array(patches.length);
         let idx = 0;
         for (const chunk of this.chunks) {
@@ -108,21 +111,12 @@ export class BvGroup extends THREE.Group {
                 wireframe: true,
             });
         }
-        // TESTING
-        // this.renderer.computeAsync(initComputeNodes).then(() => {
-        //     renderer.getArrayBufferAsync(this.chunks[0].mesh.geometry.getAttribute('position')).then((gpuBuffer) => {
-        //         const cpuArray = new Float32Array(gpuBuffer);
-        //         console.log(cpuArray);
-        //     })
-        // });
     }
 
     setLevel(newLevel) {
         if (newLevel > 6 || newLevel < 0) {
             throw new Error();
         }
-        // TODO: REMOVE THIS
-        const oldHighestLevel = this.highestComputedLevel;
 
         // need to subdivide the patch if a higher level than we've previously subdivided is requested
         if (newLevel > this.highestComputedLevel) {
@@ -140,10 +134,15 @@ export class BvGroup extends THREE.Group {
                 }
             }
 
+            // TESTING: remove this
+            const oldHighestLevel = this.highestComputedLevel;
+            console.time("setLevel")
             this.renderer
                 .resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE)
                 .then(() => {
                     this.renderer.computeAsync(computeNodes).then(() => {
+                        console.timeEnd("setLevel")
+
                         this.renderer
                             .resolveTimestampsAsync(
                                 THREE.TimestampQuery.COMPUTE,
@@ -151,7 +150,7 @@ export class BvGroup extends THREE.Group {
                             .then((ms) => {
                                 console.log(ms);
                                 console.log(
-                                    `Compute: ${this.highestComputedLevel} -> ${newLevel} took ${ms.toFixed(3)}ms`,
+                                    `Compute: ${oldHighestLevel} -> ${newLevel} took ${ms.toFixed(3)}ms`,
                                 );
                             });
                     });

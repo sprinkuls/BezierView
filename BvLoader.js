@@ -1,6 +1,7 @@
 import {FileLoader, Float32BufferAttribute, Group, Loader} from 'three/webgpu';
 import {BvPatch} from './BvPatch.js';
 import {BvQuad} from './BvQuad.js';
+import {BvTri} from './BvTri.js';
 import {BvGroup} from './BvGroup.js';
 
 /**
@@ -274,13 +275,24 @@ class BvLoader extends Loader {
                     case 3: {
                         const deg = Number(input[idx++]);
                         const numControlPoints = ((deg+2) * (deg+1)) / 2;
-                        const cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
+                        // order control points like a lower triangular matrix, i.e.:
+                        // 0
+                        // 1 2
+                        // 3 4 5
+                        const cpBufferInit = new Float32Array(numControlPoints * 4);
+                        for (let row = deg; row >= 0; row--) {
+                            for (let col = 0; col < row + 1; col++) {
+                                const bufIdx = ((((row)*(row+1)) >> 1) + col) * 4;
+                                cpBufferInit[bufIdx]   = Number(input[idx++]);
+                                cpBufferInit[bufIdx+1] = Number(input[idx++]);
+                                cpBufferInit[bufIdx+2] = Number(input[idx++]);
+                                cpBufferInit[bufIdx+3] = 1;
+                                // console.log(`${row}, ${col}`);
+                            }
+                        }
+
+                        const cpBuffer = new Float32BufferAttribute(cpBufferInit, 4);
                         currentGroup.patches.push(new BvTri(patchType, deg, cpBuffer));
-                        // currentGroup.patches.push({
-                        //     patchType: "TRI",
-                        //     deg: deg,
-                        //     cpBuffer: cpBuffer,
-                        // });
 
                         break;
                     }
@@ -297,12 +309,6 @@ class BvLoader extends Loader {
                         const numControlPoints = (uDeg + 1) * (vDeg + 1);
                         const cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
                         currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer));
-                        // currentGroup.patches.push({
-                        //     patchType: "QUAD",
-                        //     uDeg: uDeg,
-                        //     vDeg: vDeg,
-                        //     cpBuffer: cpBuffer,
-                        // });
 
                         break;
                     }
