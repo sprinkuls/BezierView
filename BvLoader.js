@@ -159,7 +159,9 @@ class BvLoader extends Loader {
                     case 1: {
                         throw new Error("TODO");
                     }
-                    case 3: {
+                    case 3:
+                    case 11: {
+                        const isRational = patchType === 11;
                         const deg = Number(input[idx++]);
                         const numControlPoints = ((deg+2) * (deg+1)) / 2;
                         // order control points like a lower triangular matrix, i.e.:
@@ -173,8 +175,12 @@ class BvLoader extends Loader {
                                 cpBufferInit[bufIdx]   = Number(input[idx++]);
                                 cpBufferInit[bufIdx+1] = Number(input[idx++]);
                                 cpBufferInit[bufIdx+2] = Number(input[idx++]);
-                                cpBufferInit[bufIdx+3] = 1;
-                                // console.log(`${row}, ${col}`);
+
+                                if (isRational) {
+                                    cpBufferInit[bufIdx+3] = Number(input[idx++]);
+                                } else {
+                                    cpBufferInit[bufIdx+3] = 1;
+                                }
                             }
                         }
 
@@ -184,7 +190,8 @@ class BvLoader extends Loader {
                         break;
                     }
                     case 4:
-                    case 5: {
+                    case 5:
+                    case 8: {
                         let uDeg, vDeg;
                         if (patchType === 4) {
                             uDeg = vDeg = Number(input[idx++]);
@@ -194,21 +201,22 @@ class BvLoader extends Loader {
                         }
 
                         const numControlPoints = (uDeg + 1) * (vDeg + 1);
-                        const cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
+
+                        let cpBuffer;
+                        if (patchType === 8) {
+                            // we have a rational point to read
+                            cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, true), 4);
+                        } else {
+                            cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
+                        }
                         currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer));
 
                         break;
-                    }
-                    case 8: {
-                        throw new Error("TODO");
                     }
                     case 9: {
                         throw new Error("TODO");
                     }
                     case 10: {
-                        throw new Error("TODO");
-                    }
-                    case 11: {
                         throw new Error("TODO");
                     }
                     default: {

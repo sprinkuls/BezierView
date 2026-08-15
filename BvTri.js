@@ -261,9 +261,9 @@ export class BvTri {
         const spaceNeeded = gni * sspi;
         const scratch = new THREE.StorageBufferAttribute(
             spaceNeeded,
-            3,
+            4,
         );
-        const scratchStorage = storage(scratch, "vec3", scratch.count);
+        const scratchStorage = storage(scratch, "vec4", scratch.count);
 
         const nodes = [];
         for (let currLevel = highestComputedLevel; currLevel < newLevel; currLevel++) {

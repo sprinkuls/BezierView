@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import * as Quad from "./BvQuad.js";
-import { storage } from "three/tsl";
+import { storage, Fn, float, element, If, equal, assign, div, vertexIndex, positionGeometry } from 'three/tsl';
 
 // a single BV file might be larger than the max size for a single alloc. (128 MiB by default),
 // so we just break each file into 'chunks' that are below that max size. this isn't
@@ -61,12 +61,14 @@ export class BvGroup extends THREE.Group {
             // console.log(`${maxChunkSize} vs ${byteOffset}`);
         }
 
-        // TESTING: remove this
         let lens = 0;
         for (const chunk of this.chunks) {
+            // since BvGroup is extending a THREE group, we add all the
+            // chunk meshes to this group
             this.add(chunk.mesh);
             lens += chunk.patches.length;
         }
+        // TESTING: remove this
         console.log(`Total # of patches: ${lens}`);
 
         ////////// initialize chunks, and the patches they contain //////////
@@ -76,12 +78,12 @@ export class BvGroup extends THREE.Group {
             // create the position buffer for the entire chunk
             const positionSBA = new THREE.StorageBufferAttribute(
                 chunk.byteSize / (4 * 4),
-                3,
+                4,
             );
             chunk.mesh.geometry.setAttribute("position", positionSBA);
             chunk.positionStorage = storage(
                 chunk.mesh.geometry.getAttribute("position"),
-                "vec3",
+                "vec4",
                 chunk.mesh.geometry.getAttribute("position").count,
             );
 
@@ -104,12 +106,34 @@ export class BvGroup extends THREE.Group {
         }
         this.renderer.compute(initComputeNodes);
 
+
+
         // all patches in all chunks are now initialized
+
+        // vertex shader to adjust all points by their rational value
+        const rationalVS = Fn(({ vertexBuffer}) => {
+            const w = float(vertexBuffer.element(vertexIndex).w);
+
+            // TODO: should we use another value than 1?
+            If (equal(w, 0), () => {
+                w.assign(1);
+            });
+
+            return div(positionGeometry, w);
+        });
+
+        // assign a material and a vertex shader to all meshes
         for (const chunk of this.chunks) {
-            chunk.mesh.material = new THREE.MeshBasicMaterial({
+            const material = new THREE.MeshBasicNodeMaterial({
                 color: 0xff00c0,
                 wireframe: true,
             });
+
+            material.positionNode = rationalVS({
+                vertexBuffer: chunk.positionStorage,
+            });
+
+            chunk.mesh.material = material;
         }
     }
 

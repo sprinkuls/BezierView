@@ -116,7 +116,7 @@
                     const text = event.target.result;
 
                     bvFile = bvLoader.parse(text); 
-                    // set initial level
+                    // TODO: set initial level to 2
                     // for (const bvGroup of bvFile.children) {
                     //     bvGroup.setLevel(2);
                     // }
@@ -156,7 +156,7 @@
             time += delta;
 
             // TESTING: remove this
-            controls.update();
+            // controls.update();
 
             // render
             renderer.render( scene, camera );
