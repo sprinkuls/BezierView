@@ -9,196 +9,160 @@
         <div id="container"></div>
         <input id="fileInput" type="file" style="visibility:hidden;position: absolute;" />
         <style>
-            body {
-                margin: 0;
-                overflow: hidden;
-            }
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
         </style>
         <script type="importmap">
-            {
-                "imports": {
-                  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
-                  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
-                  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
-                  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
-                  "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
-                }
-              }
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+                "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+                "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+                "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+            }
+        }
         </script>
         <!-- <script type="module" src = "stateManager.js"></script> -->
         <script type="module">
-            // TESTING: remove this
-            const mode = 'new';
-            console.log(`MODE SET TO: ${mode}`);
+        import * as THREE from 'three/webgpu';
+        import {globalState, setupGui, loadFile, gui} from './stateManager.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import {BvLoader} from './BvLoader.js';
 
-            import * as THREE from 'three/webgpu';
-            import {globalState, setupGui, loadFile, gui} from './stateManager.js';
-            import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-            import { BvPatch } from './BvPatch.js';
-            import {BvLoader} from './BvLoader.js';
-            let camera, scene, renderer, light, controls, time = 0;
-            let bvFile; // holds the full file that was loaded, not just one patch
-            const timer = new THREE.Timer();
-            function init() {
-                // File loader
-                // document.getElementById('fileInput').addEventListener('change', (event) => {
-                //     loadFile(event.target.files[0])
-                // });
-                // GUI
+        let camera, scene, renderer, light, controls, time = 0;
+        let bvFile; // holds the full file that was loaded, not just one patch
+        const timer = new THREE.Timer();
 
-                setupGui();
+        function init() {
+            // GUI
 
-                // CAMERA
+            setupGui();
 
-                camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
-                camera.position.set( - 5, 5, 5 );
+            // CAMERA
 
-                // SCENE
+            camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
+            camera.position.set( - 5, 5, 5 );
 
-                scene = new THREE.Scene();
-                scene.background = new THREE.Color( 0xeeeeee );
+            // SCENE
 
-                const gridHelper = new THREE.PolarGridHelper(2, 16);
-                scene.add(gridHelper);
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color( 0xeeeeee );
 
-                // LIGHTS
+            const gridHelper = new THREE.PolarGridHelper(2, 16);
+            scene.add(gridHelper);
 
-                light = new THREE.DirectionalLight( 0xffffff, 5 );
-                light.position.set( 0.5, 1, 0.5 );
-                scene.add( light );
+            // LIGHTS
 
-                // RENDERER
+            light = new THREE.DirectionalLight( 0xffffff, 5 );
+            light.position.set( 0.5, 1, 0.5 );
+            scene.add( light );
 
-                renderer = new THREE.WebGPURenderer({ trackTimestamp: true });
-                renderer.init();
+            // RENDERER
 
-                renderer.setPixelRatio(window.devicePixelRatio);
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setAnimationLoop(animate);
-                container.appendChild(renderer.domElement);
+            renderer = new THREE.WebGPURenderer({ trackTimestamp: true });
+            renderer.init();
 
-                // CONTROLS
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setAnimationLoop(animate);
+            container.appendChild(renderer.domElement);
 
-                controls = new OrbitControls(camera, renderer.domElement);
-                //TESTING: remove this
-                controls.autoRotate = true;
-                controls.autoRotateSpeed = 2.0;
+            // CONTROLS
 
-                // EVENTS
+            controls = new OrbitControls(camera, renderer.domElement);
+            //TESTING: remove this
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 2.0;
 
-                window.addEventListener('resize', onWindowResize);
+            // EVENTS
 
-                // File loader
-                const bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
-                let chooseModelHandle = gui.children[0].children[0];
+            window.addEventListener('resize', onWindowResize);
 
-                document.getElementById('fileInput').addEventListener('change', (event) => {
-                    loadBVFile(event);
-                });
+            // File loader
+            const bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
+            let chooseModelHandle = gui.children[0].children[0];
 
-                function loadBVFile(event) {
-                    const file = event.target.files[0];
+            document.getElementById('fileInput').addEventListener('change', (event) => {
+                loadBVFile(event);
+            });
 
-                    if (!file) {
-                        console.log("Error loading file");
-                        return;
-                    }
+            function loadBVFile(event) {
+                const file = event.target.files[0];
 
-                    const reader = new FileReader();
-                    reader.onload = (event) => {
-                        console.log("file loaded");
-
-                        // remove the old model (if there is one) and clean up
-                        if (bvFile) {
-                            scene.remove(bvFile);
-                            for (const group of bvFile.children) {
-                                for (const patch of group.children) {
-                                    patch.geometry.dispose()
-                                    patch.material.dispose()
-                                }
-                            }
-                        }
-
-                        // (this is just the file's text)
-                        const text = event.target.result;
-
-                        if (mode === 'new') {
-                            bvFile = bvLoader.parseNew(text);
-
-                            // set initial level
-                            // for (const bvGroup of bvFile.children) {
-                            //     bvGroup.setLevel(2);
-                            // }
-                        } else {
-                            bvFile = bvLoader.parse(text);
-                        }
-                        scene.add(bvFile);
-
-                        // TODO: update the GUI now that a new model has been loaded (groups section, etc)
-                    }
-                    reader.readAsText(file);
-
-
+                if (!file) {
+                    console.log("Error loading file");
+                    return;
                 }
 
-                //Test
-                let init_level = 2
-                gui.add({'level': init_level}, 'level', 0, 6, 1).name('Patch Level').onChange((value) => {
-                    console.log(`Setting level to: ${value}`)
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    console.log("file loaded");
 
-                    if (mode === 'new') {
-                        const newLevel = value; // TODO: (want to rename)
-                        for (const bvGroup of bvFile.children) {
-                            bvGroup.setLevel(newLevel);
-                        }
-                    } else {
-                        // console.time('change tessellation level')
-                        const all_passes = []
+                    // remove the old model (if there is one) and clean up
+                    if (bvFile) {
+                        scene.remove(bvFile);
                         for (const group of bvFile.children) {
                             for (const patch of group.children) {
-                                all_passes.push(...patch.getLevelPasses(value))
-                                // patch.setLevelAwait(value);
+                                patch.geometry.dispose()
+                                patch.material.dispose()
                             }
                         }
-                        if (all_passes.length !== 0)
-                            renderer.compute(all_passes);
-                        // console.timeEnd('change tessellation level');
                     }
-                });
-                /*
-                gui.add({'level': 1}, 'level', 0, 6, 1).name('Patch Level').onChange(async (value) => {
-                    console.time('change patch level');
-                    bvFile.setLevel(value).then(() => console.timeEnd('change patch level'));
 
-                    // bvFile.needsUpdate = true;
-                });
-                 */
+                    // (this is just the file's text)
+                    const text = event.target.result;
 
+                    bvFile = bvLoader.parse(text); 
+                    // set initial level
+                    // for (const bvGroup of bvFile.children) {
+                    //     bvGroup.setLevel(2);
+                    // }
+                    scene.add(bvFile);
+
+                }
+                // TODO: update the GUI now that a new model has been loaded (groups section, etc)
+                reader.readAsText(file);
             }
 
-            function onWindowResize() {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize( window.innerWidth, window.innerHeight );
+
+        //Test
+        let init_level = 2
+        gui.add({'level': init_level}, 'level', 0, 6, 1).name('Patch Level').onChange((value) => {
+            console.log(`Setting level to: ${value}`)
+
+            const newLevel = value; // TODO: (want to rename)
+            for (const bvGroup of bvFile.children) {
+                bvGroup.setLevel(newLevel);
             }
+        });
+    }
 
-            function animate() {
-                render();
-            }
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize( window.innerWidth, window.innerHeight );
+        }
 
-            function render() {
-                timer.update()
-                const delta = timer.getDelta();
-                time += delta;
+        function animate() {
+            render();
+        }
 
-                // TESTING: remove this
-                controls.update();
+        function render() {
+            timer.update()
+            const delta = timer.getDelta();
+            time += delta;
 
-                // render
-                renderer.render( scene, camera );
-            }
+            // TESTING: remove this
+            controls.update();
 
-            init();
+            // render
+            renderer.render( scene, camera );
+        }
+
+        init();
         </script>
     </body>
 </html>

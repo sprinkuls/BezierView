@@ -56,7 +56,6 @@ const subdivCompute = Fn ( ({positionStorage, cpStorage, scratchStorage, indexOf
     // to a midpoint on one side of the triangle
     const midpoint_nr = mod(instanceIndex, 3);
 
-    // oh my god this fucking language
     If (equal(midpoint_nr, 0), () => {
         row.assign(add(row, 1));
     }).ElseIf(equal(midpoint_nr, 1), () => {
@@ -105,7 +104,7 @@ const subdivCompute = Fn ( ({positionStorage, cpStorage, scratchStorage, indexOf
     // (operations are ordered such that these don't conflict)
     Loop( { start: sub(deg, 1), end: int(0), type: 'int', name: 'loop_deg', condition: '>' }, ( { loop_deg } ) => {
 
-        Loop( { start: 0, end: int(deg), type: 'int', name: 'row', condition: '<' }, ( { row } ) => {
+        Loop( { start: 0, end: int(loop_deg), type: 'int', name: 'row', condition: '<' }, ( { row } ) => {
             Loop( { start: 0, end: int(add(row, 1)), type: 'int', name: 'col', condition: '<' }, ( { col } ) => {
                 const cp_u = scratchStorage.element(add(scratchOffset, rcToIndex(row, col)));
                 const cp_v = scratchStorage.element(add(scratchOffset, rcToIndex(add(row, 1), col)));
