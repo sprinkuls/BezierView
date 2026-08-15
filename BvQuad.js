@@ -180,13 +180,13 @@ export class BvQuad {
                 const bottomRight = flattenIndex(u + uStride, v + vStride);
 
                 // Triangle 1
+                indices[idx++] = bottomLeft;
+                indices[idx++] = topRight;
                 indices[idx++] = topLeft;
-                indices[idx++] = topRight;
-                indices[idx++] = bottomLeft;
                 // Triangle 2
-                indices[idx++] = topRight;
-                indices[idx++] = bottomRight;
                 indices[idx++] = bottomLeft;
+                indices[idx++] = bottomRight;
+                indices[idx++] = topRight;
             }
         }
         BvQuad.indexBuffers[key] = indices;
