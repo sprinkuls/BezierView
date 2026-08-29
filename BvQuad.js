@@ -143,7 +143,7 @@ export class BvQuad {
             return indexBufferCopy;
         }
 
-        console.log(`Index buffer cache miss: ${key}`)
+        // console.log(`Index buffer cache miss: ${key}`)
 
         const quadsPerDim = 1 << level; // 2^n
         const stride = 1 << (6 - level);

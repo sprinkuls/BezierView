@@ -4,6 +4,8 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Bezier View</title>
+        <!-- prefetch the default model that will be displayed on application startup -->
+        <link rel="preload" href="/data/5/logo.bv" as="fetch" crossorigin>
     </head>
     <body>
         <div id="container"></div>
@@ -28,117 +30,85 @@
         <!-- <script type="module" src = "stateManager.js"></script> -->
         <script type="module">
         import * as THREE from 'three/webgpu';
-        import {globalState, setupGui, loadFile, gui} from './stateManager.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import {state, setupGui, setGuiModel} from './stateManager.js';
         import {BvLoader} from './BvLoader.js';
 
-        let camera, scene, renderer, light, controls, time = 0;
-        let bvFile; // holds the full file that was loaded, not just one patch
+        let camera, scene, renderer, light1, light2, light3, controls, time = 0;
+        let gui;
+        // holds the full file that was loaded, not just one patch. this is a THREE group
+        // that contains BvGroup objects for each "Group" listed in the .bv file
+        let bvFile;
         const timer = new THREE.Timer();
 
-        function init() {
-            // GUI
+        // TODO: much of this state is tied to what the default GUI settings are
+        // (e.g., if a light is turned on/off by default), but that connection
+        // isn't anywhere in code. maybe export a "default options" object
+        // in stateManager and then, based on those options, either turn these things
+        // on or off?
+        async function init() {
 
-            setupGui();
-
-            // CAMERA
-
+            //////////////////// CAMERA
             camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
             camera.position.set( - 5, 5, 5 );
 
-            // SCENE
-
+            //////////////////// SCENE
             scene = new THREE.Scene();
             scene.background = new THREE.Color( 0xeeeeee );
 
             const gridHelper = new THREE.PolarGridHelper(2, 16);
             scene.add(gridHelper);
 
-            // LIGHTS
+            //////////////////// LIGHTS
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight)
 
-            light = new THREE.DirectionalLight( 0xffffff, 5 );
-            light.position.set( 0.5, 1, 0.5 );
-            scene.add( light );
+            light1 = new THREE.DirectionalLight( 0xffffff, 5 );
+            light1.position.set( 1, 1, 1 );
+            scene.add( light1 );
 
-            // RENDERER
+            light2 = new THREE.DirectionalLight( 0xffffff, 0 );
+            light2.position.set( -1.41, 1, 0 );
+            scene.add( light2 );
 
-            renderer = new THREE.WebGPURenderer({ trackTimestamp: true });
-            renderer.init();
+            light3 = new THREE.DirectionalLight( 0xffffff, 0 );
+            light3.position.set( 1, 1, -1 );
+            scene.add( light3 );
 
+            //////////////////// RENDERER
+            renderer = new THREE.WebGPURenderer({ trackTimestamp: true, antialias: true });
+            await renderer.init();
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setAnimationLoop(animate);
             container.appendChild(renderer.domElement);
 
-            // CONTROLS
-
+            //////////////////// CONTROLS
             controls = new OrbitControls(camera, renderer.domElement);
             //TESTING: remove this
             controls.autoRotate = true;
             controls.autoRotateSpeed = 2.0;
 
-            // EVENTS
-
+            //////////////////// EVENTS
             window.addEventListener('resize', onWindowResize);
 
-            // File loader
+            //////////////////// DEFAULT FILE
+            const response = await fetch('data/5/logo.bv');
+            const text = await response.text();
             const bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
-            let chooseModelHandle = gui.children[0].children[0];
+            bvFile = bvLoader.parse(text);
+            scene.add(bvFile);
 
-            document.getElementById('fileInput').addEventListener('change', (event) => {
-                loadBVFile(event);
+            //////////////////// GUI
+            gui = setupGui({
+                scene: scene,
+                renderer: renderer,
+                light1: light1,
+                light2: light2,
+                light3: light3,
+                initBvFile: bvFile
             });
-
-            function loadBVFile(event) {
-                const file = event.target.files[0];
-
-                if (!file) {
-                    console.log("Error loading file");
-                    return;
-                }
-
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    console.log("file loaded");
-
-                    // remove the old model (if there is one) and clean up
-                    if (bvFile) {
-                        scene.remove(bvFile);
-                        for (const group of bvFile.children) {
-                            for (const patch of group.children) {
-                                patch.geometry.dispose()
-                                patch.material.dispose()
-                            }
-                        }
-                    }
-
-                    // (this is just the file's text)
-                    const text = event.target.result;
-
-                    bvFile = bvLoader.parse(text); 
-                    // TODO: set initial level to 2
-                    // for (const bvGroup of bvFile.children) {
-                    //     bvGroup.setLevel(2);
-                    // }
-                    scene.add(bvFile);
-
-                }
-                // TODO: update the GUI now that a new model has been loaded (groups section, etc)
-                reader.readAsText(file);
-            }
-
-
-        //Test
-        let init_level = 2
-        gui.add({'level': init_level}, 'level', 0, 6, 1).name('Patch Level').onChange((value) => {
-            console.log(`Setting level to: ${value}`)
-
-            const newLevel = value; // TODO: (want to rename)
-            for (const bvGroup of bvFile.children) {
-                bvGroup.setLevel(newLevel);
-            }
-        });
-    }
+        }
 
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -159,6 +129,7 @@
             // controls.update();
 
             // render
+            renderer.resolveTimestampsAsync( THREE.TimestampQuery.RENDER );
             renderer.render( scene, camera );
         }
 

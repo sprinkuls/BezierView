@@ -182,7 +182,7 @@ export class BvTri {
             return indexBufferCopy;
         }
 
-        console.log(`Index buffer cache miss: ${key}`)
+        // console.log(`Index buffer cache miss: ${key}`)
         const trisPerEdge = 1 << level;
         const stride = 1 << (6 - level);
 

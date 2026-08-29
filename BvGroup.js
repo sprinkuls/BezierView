@@ -124,14 +124,25 @@ export class BvGroup extends THREE.Group {
 
         // assign a material and a vertex shader to all meshes
         for (const chunk of this.chunks) {
-            const material = new THREE.MeshBasicNodeMaterial({
-                color: 0xff00c0,
+
+            const material = new THREE.MeshStandardNodeMaterial({
+                color: 0x0000c0,
+                wireframe: false,
+            });
+            const wireframeMaterial = new THREE.MeshBasicNodeMaterial({
+                color: 0x000000,
                 wireframe: true,
             });
 
             material.positionNode = rationalVS({
                 vertexBuffer: chunk.positionStorage,
             });
+            wireframeMaterial.positionNode = rationalVS({
+                vertexBuffer: chunk.positionStorage,
+            });
+
+            chunk.material = material;
+            chunk.wireframeMaterial = wireframeMaterial;
 
             chunk.mesh.material = material;
         }
@@ -159,26 +170,33 @@ export class BvGroup extends THREE.Group {
             }
 
             // TESTING: remove this
-            const oldHighestLevel = this.highestComputedLevel;
-            console.time("setLevel")
-            this.renderer
-                .resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE)
-                .then(() => {
-                    this.renderer.computeAsync(computeNodes).then(() => {
-                        console.timeEnd("setLevel")
+            const mode = '';
+            if (mode === 'TIMING') {
+                const oldHighestLevel = this.highestComputedLevel;
+                console.time("setLevel");
+                this.renderer
+                    .resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE)
+                    .then(() => {
+                        console.time("ThreeJS rsrc. creation");
+                        this.renderer.computeAsync(computeNodes).then(() => {
+                            console.timeEnd("setLevel")
 
-                        this.renderer
-                            .resolveTimestampsAsync(
-                                THREE.TimestampQuery.COMPUTE,
-                            )
-                            .then((ms) => {
-                                console.log(ms);
-                                console.log(
-                                    `Compute: ${oldHighestLevel} -> ${newLevel} took ${ms.toFixed(3)}ms`,
-                                );
-                            });
+                            this.renderer
+                                .resolveTimestampsAsync(
+                                    THREE.TimestampQuery.COMPUTE,
+                                )
+                                .then((ms) => {
+                                    console.log(
+                                        `Compute: ${oldHighestLevel} -> ${newLevel} took ${ms.toFixed(3)}ms on the GPU`,
+                                    );
+                                });
+                        });
+                        console.timeEnd("ThreeJS rsrc. creation");
                     });
-                });
+            } else {
+                this.renderer.compute(computeNodes);
+            }
+
             this.highestComputedLevel = newLevel;
         }
 
@@ -190,7 +208,7 @@ export class BvGroup extends THREE.Group {
                 chunk.mesh.geometry.setIndex(chunk.indexBuffers[newLevel]);
             }
         } else {
-            console.log(`Chunk cache miss: level ${newLevel}`);
+            // console.log(`Chunk cache miss: level ${newLevel}`);
             const indices = [];
             for (const chunk of this.chunks) {
                 for (const patch of chunk.patches) {

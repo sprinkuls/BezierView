@@ -235,7 +235,8 @@ class BvLoader extends Loader {
         const bvFile = new Group();
         for (const group of groups) {
             // TODO
-            console.log(group.name, group.patches);
+            // console.log(group.name, group.patches);
+            console.log(group.name);
             bvFile.add(new BvGroup(group.name, group.patches, this.renderer));
         }
         return bvFile;
