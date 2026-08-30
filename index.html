@@ -35,11 +35,12 @@
         import {BvLoader} from './BvLoader.js';
 
         let camera, scene, renderer, light1, light2, light3, controls, time = 0;
+        const timer = new THREE.Timer();
         let gui;
+
         // holds the full file that was loaded, not just one patch. this is a THREE group
         // that contains BvGroup objects for each "Group" listed in the .bv file
         let bvFile;
-        const timer = new THREE.Timer();
 
         // TODO: much of this state is tied to what the default GUI settings are
         // (e.g., if a light is turned on/off by default), but that connection
@@ -48,18 +49,20 @@
         // on or off?
         async function init() {
 
-            //////////////////// CAMERA
+            // ==================== Camera ====================
             camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
             camera.position.set( - 5, 5, 5 );
 
-            //////////////////// SCENE
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color( 0xeeeeee );
 
+            // ==================== Scene ====================
+            scene = new THREE.Scene();
+            // scene.background = new THREE.Color( 0xeeeeee );
+            scene.background = new THREE.Color( 0x333333 );
             const gridHelper = new THREE.PolarGridHelper(2, 16);
             scene.add(gridHelper);
 
-            //////////////////// LIGHTS
+
+            // ==================== Lights ====================
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambientLight)
 
@@ -75,31 +78,36 @@
             light3.position.set( 1, 1, -1 );
             scene.add( light3 );
 
-            //////////////////// RENDERER
+            // ==================== Renderer ====================
             renderer = new THREE.WebGPURenderer({ trackTimestamp: true, antialias: true });
             await renderer.init();
+
+            if (renderer.backend.isWebGPUBackend === false){
+                throw new Error('WebGPU is not supported by your browser');
+            }
+
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setAnimationLoop(animate);
             container.appendChild(renderer.domElement);
 
-            //////////////////// CONTROLS
+            // ==================== Controls ====================
             controls = new OrbitControls(camera, renderer.domElement);
             //TESTING: remove this
             controls.autoRotate = true;
             controls.autoRotateSpeed = 2.0;
 
-            //////////////////// EVENTS
+            // ==================== Events ====================
             window.addEventListener('resize', onWindowResize);
 
-            //////////////////// DEFAULT FILE
+            // ==================== Default Model ====================
             const response = await fetch('data/5/logo.bv');
             const text = await response.text();
             const bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
             bvFile = bvLoader.parse(text);
             scene.add(bvFile);
 
-            //////////////////// GUI
+            // ==================== GUI ====================
             gui = setupGui({
                 scene: scene,
                 renderer: renderer,
@@ -126,7 +134,7 @@
             time += delta;
 
             // TESTING: remove this
-            // controls.update();
+            controls.update();
 
             // render
             renderer.resolveTimestampsAsync( THREE.TimestampQuery.RENDER );

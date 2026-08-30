@@ -185,6 +185,7 @@ class BvLoader extends Loader {
                         }
 
                         const cpBuffer = new Float32BufferAttribute(cpBufferInit, 4);
+                        this.renderer.backend.createStorageAttribute(cpBuffer);
                         currentGroup.patches.push(new BvTri(patchType, deg, cpBuffer));
 
                         break;
@@ -209,6 +210,7 @@ class BvLoader extends Loader {
                         } else {
                             cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
                         }
+                        this.renderer.backend.createStorageAttribute(cpBuffer);
                         currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer));
 
                         break;
