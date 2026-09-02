@@ -1,93 +1,178 @@
 import * as THREE from 'three/webgpu';
 import { vec3, storage, Fn, If, Loop, equal, notEqual, uniform, instanceIndex, objectWorldMatrix, color, screenUV, attribute, mul, add, sub, div, mod, shiftLeft, shiftRight, floor, abs, uint, int, float} from 'three/tsl';
 
-const initPatch = Fn(({cpBuffer, positionStorage, uDeg, vDeg, indexOffset}) => {
-    const cpStorage = storage(cpBuffer, 'vec4', cpBuffer.count);
 
-    // equivalent to:
-    // for (int i = 0; i <= uDeg; i++)
-    //     for (int j = 0; j <= vDeg; j++)
-    Loop( add(uDeg, 1), add(vDeg, 1), ( { i, j } ) => {
-        const src = add(mul(i, add(vDeg, 1)), j);
-        const dst = add(mul(mul(i, 64), add(mul(vDeg, 64), 1)), mul(j, 64));
+export const initPatchWGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> position_buffer: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> cp_buffer : array<vec4<f32>>;
 
-        positionStorage.element(add(dst, indexOffset)).assign(cpStorage.element(src));
-    });
-});
+struct patchInfo {
+    index_offset: u32,
+    u_deg : u32,
+    v_deg : u32,
+}
+@group(0) @binding(2) var<uniform> p : patchInfo;
 
-const vPassCompute = Fn ( ({positionStorage, indexOffset, uDeg, vDeg, currComputedLevel}) => {
-    const maxLevel = int(6);
-    const numQuadPerDim = int(shiftLeft(1, currComputedLevel));
+@compute @workgroup_size(1) fn init_patch() {
+    // "highest (subdivision) level"
+    const hl : u32 = 6;
+    // (2 ^ hl), so for hl=6 this is 64
+    const max_quads = 1 << hl;
 
-    // ranges from 1 to ((numQuadPerDim * uDeg)+1) (so really, 0 to (numQuadPerDim * uDeg))
-    const gridX = int(div(instanceIndex, numQuadPerDim));
-    // ranges from 1 to numQuadPerDim (so really, 0 to numQuadPerDim-1)
-    const gridY = mod(int(instanceIndex), numQuadPerDim);
+    for (var i : u32 = 0; i <= p.u_deg; i++) {
+        for (var j : u32 = 0; j <= p.v_deg; j++) {
+            let src : u32 = ((p.v_deg+1) * i) + j;
+            let dst : u32 = ((i * max_quads) * ((p.v_deg * max_quads) + 1)) + (j * max_quads);
+            position_buffer[dst + p.index_offset] = cp_buffer[src];
+        }
+    }
+}
+`;
+
+// TODO: when profiling either compute shader, the thing actually taking the most time
+// (and by no small amount) is just memory accesses, since we keep reading/writing directly
+// to the position buffer. seems to be roughly a 3 : 1 ratio of memory : calculations,
+// address that!
+export const vPassWGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> position_buffer: array<vec4<f32>>;
+
+struct patchInfo {
+    index_offset: u32,
+    u_deg : u32,
+    v_deg : u32,
+}
+@group(0) @binding(1) var<uniform> p : patchInfo;
+
+struct passInfo {
+    nr_invocations : u32,
+    curr_computed_level : u32,
+}
+
+@group(0) @binding(2) var<uniform> cur_pass : passInfo;
 
 
-    const stride = shiftLeft(1, sub(maxLevel, int(currComputedLevel)));
-    const halfstride = shiftRight(stride, int(1));
+// "highest (subdivision) level"
+const hl : u32 = 6;
+// (2 ^ hl), so for hl=6 this is 64
+const max_quads = 1 << hl;
 
-    // how many indices you have to move over before moving "right" 1 in the U direction
-    const bufferSize = add(mul(int(vDeg), shiftLeft(1, maxLevel)), 1);
-    const flattenInstanceIndex = (i, j) => (add(mul(i, bufferSize), j));
+@compute @workgroup_size(64, 1, 1) fn v_pass(
+    @builtin( global_invocation_id ) globalId : vec3<u32>,
+) {
+    let instance_index : u32 = globalId.x;
 
-    const x = int(mul(gridX, stride));
-    const y = int(mul(gridY, mul(stride, vDeg)));
+    if (instance_index > cur_pass.nr_invocations - 1) {
+        return;
+    }
 
 
-    Loop( { start: 0, end: int(vDeg), type: 'int', name: 'i', condition: '<' }, ( { i } ) => {
+    // (2 ^ curr_level), so at curr_level=2 this is 4 quads per dimension
+    let num_quads_per_dim : u32 = u32(1) << cur_pass.curr_computed_level;
 
-        Loop( { start: i, end: int(vDeg), type: 'int', name: 'j', condition: '<' }, ( { j } ) => {
+    let stride : u32 = u32(1) << (hl - cur_pass.curr_computed_level);
+    let halfstride : u32 = stride >> 1;
 
-            const ytemp = add(y, add(mul(halfstride, i), mul(sub(j, i), stride)));
+    // these are equivalent to below; just division and modulo by a power of 2
+    // let grid_x : u32 = instance_index / num_quads_per_dim;
+    // let grid_y : u32 = instance_index % num_quads_per_dim;
+    let grid_x : u32 = instance_index >> cur_pass.curr_computed_level;
+    let grid_y : u32 = instance_index & ((num_quads_per_dim) - 1);
 
-            const p1  = add(indexOffset, flattenInstanceIndex(x, ytemp));
-            const mid = add(indexOffset, flattenInstanceIndex(x, add(ytemp, halfstride)));
-            const p2  = add(indexOffset, flattenInstanceIndex(x, add(ytemp, stride)));
+    let x = grid_x * stride;
+    let y = grid_y * stride * p.v_deg;
+    let bw : u32 = (p.v_deg * max_quads) + 1;
 
-            positionStorage.element(mid).assign(mul(add(positionStorage.element(p1), positionStorage.element(p2)), 0.5));
+    // we're just multiplying the x coordinate by the buffer width (since the
+    // data is stored in row-major order), then adding the y coordinate.
+    // pulled out because it gets used thrice every loop,
+    // and doesn't change for the entire run of this shader.
+    let base_index : u32 = p.index_offset + (bw * x);
 
-        } );
+    for (var i : u32 = 0; i < p.v_deg; i++) {
+        for (var j : u32 = i; j < p.v_deg; j++) {
+            let y_temp = y + (halfstride * i) + (stride * (j-i));
 
-    } );
+            let p1  = base_index + y_temp;
+            let mid = base_index + y_temp + halfstride;
+            let p2  = base_index + y_temp + stride;
 
-});
+            position_buffer[mid] = (position_buffer[p1] + position_buffer[p2]) * 0.5;
+        }
+    }
+}
+`;
 
-const uPassCompute = Fn ( ({positionStorage, indexOffset, uDeg, vDeg, currComputedLevel}) => {
-    const maxLevel = int(6);
-    const numQuadPerDim = int(shiftLeft(int(1), currComputedLevel));
+export const uPassWGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> position_buffer: array<vec4<f32>>;
 
-    // ranges from 0 to (numQuadPerDim-1)
-    const gridX = mod(int(instanceIndex), numQuadPerDim);
-    // ranges from 0 to (numQuadPerDim * vDeg * 2)
-    const gridY = int(div(instanceIndex, numQuadPerDim));
+struct patchInfo {
+    index_offset: u32,
+    u_deg : u32,
+    v_deg : u32,
+}
+@group(0) @binding(1) var<uniform> p : patchInfo;
 
-    const stride = shiftLeft(1, sub(maxLevel, currComputedLevel));
-    const halfstride = shiftRight(stride, int(1));
+struct passInfo {
+    nr_invocations : u32,
+    curr_computed_level : u32,
+}
 
-    const bufferSize = add(mul(int(vDeg), shiftLeft(1, maxLevel)), 1);
-    const flattenInstanceIndex = (i, j) => (add(mul(i, bufferSize), j));
+@group(0) @binding(2) var<uniform> cur_pass : passInfo;
 
-    const x = mul(gridX, mul(stride, uDeg));
-    const y = mul(gridY, halfstride);
+// "highest (subdivision) level"
+const hl : u32 = 6;
+// (2 ^ hl), so for hl=6 this is 64
+const max_quads = 1 << hl;
 
-    Loop( { start: 0, end: int(uDeg), type: 'int', name: 'i', condition: '<' }, ( { i } ) => {
+@compute @workgroup_size(64, 1, 1) fn u_pass(
+    @builtin( global_invocation_id ) globalId : vec3<u32>,
+) {
+    let instance_index : u32 = globalId.x;
 
-        Loop( { start: i, end: int(uDeg), type: 'int', name: 'j', condition: '<' }, ( { j } ) => {
+    if (instance_index > cur_pass.nr_invocations - 1) {
+        return;
+    }
 
-            const xtemp = add(x, add(mul(halfstride, i), mul(stride, sub(j, i))));
 
-            const p1  = add(indexOffset, flattenInstanceIndex(xtemp, y));
-            const mid = add(indexOffset, flattenInstanceIndex(add(xtemp, halfstride), y));
-            const p2  = add(indexOffset, flattenInstanceIndex(add(xtemp, stride), y));
+    // (2 ^ curr_level), so at curr_level=2 this is 4 quads per dimension
+    let num_quads_per_dim : u32 = u32(1) << cur_pass.curr_computed_level;
 
-            positionStorage.element(mid).assign(mul(add(positionStorage.element(p1), positionStorage.element(p2)), 0.5));
+    let stride : u32 = u32(1) << (hl - cur_pass.curr_computed_level);
+    let halfstride : u32 = stride >> 1;
 
-        } );
+    // NOTE: the mod/div are swapped from v_pass!
+    // TODO: i feel i should change that
+    // let grid_x : u32 = instance_index % num_quads_per_dim;
+    // let grid_y : u32 = instance_index / num_quads_per_dim;
+    let grid_x : u32 = instance_index & ((num_quads_per_dim) - 1);
+    let grid_y : u32 = instance_index >> cur_pass.curr_computed_level;
 
-    } );
-});
+    let x = grid_x * stride * p.u_deg;
+    let y = grid_y * halfstride;
+
+    let bw : u32 = (p.v_deg * max_quads) + 1;
+
+    // since the data is stored in row-major order, and the row being accessed changes
+    // during runs of the inner loop, we can't pre-calculate the index as much as
+    // we can in the v shader
+    let base_index : u32 = p.index_offset + y;
+
+    for (var i : u32 = 0; i < p.u_deg; i++) {
+        for (var j : u32 = i; j < p.u_deg; j++) {
+            let x_temp : u32 = x + ((halfstride * i) + (stride * (j-i)));
+
+            // let p1  = p.index_offset + y + (bw * (x_temp));
+            // let mid = p.index_offset + y + (bw * (x_temp + halfstride));
+            // let p2  = p.index_offset + y + (bw * (x_temp + stride));
+            let p1  = base_index + (bw * (x_temp));
+            let mid = base_index + (bw * (x_temp + halfstride));
+            let p2  = base_index + (bw * (x_temp + stride));
+
+            position_buffer[mid] = (position_buffer[p1] + position_buffer[p2]) * 0.5;
+        }
+    }
+}
+`;
 
 export class BvQuad {
 
@@ -108,6 +193,9 @@ export class BvQuad {
         // set later when this patch is assigned to a particular chunk in a BvGroup
         this.byteOffset = -1;
         this.indexOffset = -1;
+        // set later when this patch is being initialized
+        this.uniformBuffer = -1; // GPUBuffer that holds uDeg/vDeg/indexOffset
+        this.bindGroupLayout = -1; // GPUBindGroupLayout
     }
 
     getMemNeededBytes() {
@@ -125,6 +213,52 @@ export class BvQuad {
             indexOffset: this.indexOffset
         }).compute(1);
     }
+
+    // Adds dispatches to the passed-in GPUComputePassEncoder that will
+    // copy this patch's control points to the correct locations in the
+    // position buffer.
+    //
+    // NOTE: this assumes that the correct pipeline has already been set!
+    //       this is done because it allows the loop running this method on
+    //       all patches to avoid adding unnecessary pass.setPipeline() calls;
+    //       since this patch doesn't know what came before or after it, it
+    //       doesn't have enough information to make that decision.
+    //
+    // TODO: ugly signature, maybe just store chunkVB on the patch since it
+    //       should be static
+    initPatch(renderer, pass, chunkPosBuffer) {
+        const device = renderer.backend.device;
+        // The GPUBuffer that points to this patch's control point buffer
+        const patchCPBuffer = renderer.backend.get(this.cpBuffer).buffer;
+
+        // index_offset(u32) + u_deg(u32) + v_deg(u32)
+        const uniformBufferSize = (4) + (4) + (4);
+        const uniformBuffer = device.createBuffer({
+            label: `Patch info uniform (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
+            size: uniformBufferSize,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        const uniformValues = new Uint32Array([this.indexOffset, this.uDeg, this.vDeg]);
+        device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+
+        this.uniformBuffer = uniformBuffer;
+
+        // TODO: cache these based on some key that isn't tied to indexOffset (and perhaps not to
+        //       the chunk's position buffer either)
+        const bindGroup = device.createBindGroup({
+            label: `Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
+            layout: this.bindGroupLayout,
+            entries: [
+                {binding: 0, resource: chunkPosBuffer },
+                {binding: 1, resource: patchCPBuffer },
+                {binding: 2, resource: uniformBuffer },
+            ]
+        });
+
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(1);
+    }
+
 
     // TODO: this should probably just take in an array plus a starting position
     // in that array and write to that, rather than return a new array that
@@ -151,7 +285,7 @@ export class BvQuad {
         const vStride = this.vDeg * stride; // spacing in the v direction
 
         /*
-         * data stored in "v-major" order
+         * data stored in u-major order
          *
          *    2   5
          *     x---x
@@ -199,34 +333,89 @@ export class BvQuad {
         return indexBufferCopy;
     }
 
-    // returns compute nodes that, when computed, will subdivide this patch
-    getSubdivComputeNodes(positionStorage, highestComputedLevel, newLevel) {
+
+    // TODO: this signature is terrible; generally need to decide how to architect access to
+    // all webgpu resources, this is only like this as a "webgpu and wgsl work" proof of concept
+    subdivPatch({vPipeline, uPipeline, renderer, pass, chunkPosBuffer, highestComputedLevel, newLevel}) {
         if (highestComputedLevel >= newLevel) {
             throw new Error();
         }
+        const device = renderer.backend.device;
+        const vLayout = vPipeline.getBindGroupLayout(0);
+        const uLayout = uPipeline.getBindGroupLayout(0);
 
-        const nodes = [];
         for (let currLevel = highestComputedLevel; currLevel < newLevel; currLevel++) {
-            const nqpd = 1 << currLevel; // "number of quads per dimension"
-            const v = vPassCompute({
-                positionStorage: positionStorage,
-                indexOffset: uniform(this.indexOffset),
-                uDeg: uniform(this.uDeg),
-                vDeg: uniform(this.vDeg),
-                currComputedLevel: uniform(currLevel)
-            }).compute(((nqpd*this.uDeg)+1)*nqpd);
-            const u = uPassCompute({
-                positionStorage: positionStorage,
-                indexOffset: uniform(this.indexOffset),
-                uDeg: uniform(this.uDeg),
-                vDeg: uniform(this.vDeg),
-                currComputedLevel: uniform(currLevel)
-            }).compute(((nqpd*this.vDeg*2)+1)*nqpd);
+            // "number of quads per dimension"
+            const nqpd = 1 << currLevel;
 
-            nodes.push(v);
-            nodes.push(u);
+            // TODO: CACHE BIND GROUPS, AND MOVE SHADER INVOCATIONS OUTSIDE OF THEM (as in,
+            // don't store shader invocations there, so we can cache the bind groups)
+            // really, we should reuse bind groups for subdivision and for initialization,
+            // since both use this 'uniformBuffer' and 'chunkPosBuffer'. we could just
+            // put those in their own bind group which gets reused for everything, and then
+            // have a second bind group that holds, like,
+            // just the # of invocations, or just the CP buffer reference or something
+
+            // TODO: we could save a LOT of pipeline changes by doing this by
+            // patch type. maybe should consider storing patches in memory by patch type?
+            // or e.g. by dispatching all U passes for all quads in the patch, then all
+            // V passes, for a given level. would need to look into that far more because
+            // that might mean worse performance overall even if there are fewer pipeline swaps
+
+
+            // ====================
+            // V Pass
+            // ====================
+            pass.setPipeline(vPipeline);
+
+            // uniform to send the # of invocations for this shader, along with the current
+            // highest computed level
+            const vShaderInvocations = ((nqpd*this.uDeg)+1)*nqpd;
+            const vInvocationsBuffer = device.createBuffer({
+                size: 8, // two u32
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(vInvocationsBuffer, 0, new Uint32Array([vShaderInvocations, currLevel]));
+
+            const vBindGroup = device.createBindGroup({
+                label: `V Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
+                layout: vLayout,
+                entries: [
+                    {binding: 0, resource: chunkPosBuffer },
+                    {binding: 1, resource: this.uniformBuffer },
+                    {binding: 2, resource: vInvocationsBuffer },
+                ]
+            });
+            pass.setBindGroup(0, vBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(vShaderInvocations / 64)); // (workgroup size is 64)
+
+
+
+            // ====================
+            // U Pass
+            // ====================
+            pass.setPipeline(uPipeline);
+
+            // uniform to send the # of invocations for this shader, along with the current
+            // highest computed level
+            const uShaderInvocations = ((nqpd*this.vDeg*2)+1)*nqpd;
+            const uInvocationsBuffer = device.createBuffer({
+                size: 8, // one u32
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(uInvocationsBuffer, 0, new Uint32Array([uShaderInvocations, currLevel]));
+
+            const uBindGroup = device.createBindGroup({
+                label: `U Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
+                layout: uLayout,
+                entries: [
+                    {binding: 0, resource: chunkPosBuffer },
+                    {binding: 1, resource: this.uniformBuffer },
+                    {binding: 2, resource: uInvocationsBuffer },
+                ]
+            });
+            pass.setBindGroup(0, uBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(uShaderInvocations / 64)); // (workgroup size is 64)
         }
-
-        return nodes;
     }
 }

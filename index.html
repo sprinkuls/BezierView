@@ -128,7 +128,16 @@
             render();
         }
 
+        // TESTING: remove this
+        let count = 3;
         function render() {
+            count--;
+            if (count === 0) {
+                console.log("AH!");
+                for (const bvGroup of bvFile.children) {
+                    bvGroup.setLevel(2);
+                }
+            }
             timer.update()
             const delta = timer.getDelta();
             time += delta;

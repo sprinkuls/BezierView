@@ -161,7 +161,8 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
 
     ////////////////////////////// 'Display'
     //////////////////////////////////////////////////
-    const displayFolder = gui.addFolder('Display').close();
+    // const displayFolder = gui.addFolder('Display').close();
+    const displayFolder = gui.addFolder('Display');
     const controlMesh = displayFolder.add(state.groupSettings["All Groups"], 'controlMesh').name('Show Control Mesh').onChange(propogateState('controlMesh'));
     displayFolder.add(state, 'boundingBox').name('Show Bounding Box');
     const showPatches = displayFolder.add(state.groupSettings["All Groups"], 'showPatches').name('Show Patches').onChange(propogateState('showPatches'));

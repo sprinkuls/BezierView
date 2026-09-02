@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { storage, Fn, float, element, If, equal, assign, div, vertexIndex, positionGeometry } from 'three/tsl';
+import * as Quad from './BvQuad.js';
 
 // a single BV file might be larger than the max size for a single alloc. (128 MiB by default),
 // so we just break each file into 'chunks' that are below that max size. this isn't
@@ -14,6 +15,64 @@ function Chunk() {
         // will be assigned to a storageBufferAttribute once needed size is known
         positionStorage: -1,
     };
+}
+
+const rsrcCache = {
+    computePipeline: {
+        quad: null,
+        tri : null,
+    },
+    // TODO
+    // pipelineLayout: {
+    //     quad: null,
+    //     tri : null,
+    // },
+    shaderModule: {
+        quad: null,
+        tri : null,
+    },
+    bindGroupLayout: {
+        quad: null,
+        tri : null,
+    },
+}
+
+
+function getResource(device, patchType, rsrc) {
+    if (patchType === 'quad') {
+        if (rsrc === 'shaderModule') {
+            if (rsrcCache[rsrc]['quad'] === null) {
+                rsrcCache[rsrc]['quad'] = device.createShaderModule({
+                    label: 'Quad. init. shader module',
+                    code: Quad.initPatchWGSL,
+                });
+            }
+            return rsrcCache[rsrc]['quad'];
+
+        } else if (rsrc === 'computePipeline') {
+            if (rsrcCache[rsrc]['quad'] === null) {
+
+                rsrcCache[rsrc]['quad'] = device.createComputePipeline({
+                    label: 'Quad. init. compute pipeline',
+                    layout: 'auto', // TODO: create this independently and cache it
+                    compute: {
+                        module: getResource(device, patchType, 'shaderModule'),
+                    },
+                });
+            }
+            return rsrcCache[rsrc]['quad'];
+
+        } else if (rsrc === 'bindGroupLayout') {
+            if (rsrcCache[rsrc]['quad'] === null) {
+                rsrcCache[rsrc]['quad'] = getResource(device, patchType, 'computePipeline')
+                    .getBindGroupLayout(0);
+            }
+
+            return rsrcCache[rsrc]['quad'];
+        }
+    } else if (patchType === 'tri') {
+        // TODO
+    }
 }
 
 export class BvGroup extends THREE.Group {
@@ -57,7 +116,8 @@ export class BvGroup extends THREE.Group {
                 this.chunks.push(Chunk());
             }
             patch.byteOffset = byteOffset;
-            patch.indexOffset = byteOffset / (4 * 4); // each point is 4 Float32s (even vec3s are vec4s under the hood)
+            // each point is 4 Float32s (even vec3s are vec4s under the hood)
+            patch.indexOffset = byteOffset / (4 * 4); 
             this.chunks.at(-1).patches.push(patch);
             this.chunks.at(-1).byteSize += byteSize;
 
@@ -75,80 +135,12 @@ export class BvGroup extends THREE.Group {
         // TESTING: remove this
         console.log(`Total # of patches: ${lens}`);
 
-        ////////// initialize chunks, and the patches they contain //////////
-        // TODO: these (i.e. pipelines, shaders) should be cached across all BvGroups
-        const module = this.device.createShaderModule({
-            label: 'Quad. init. shader module',
-            code: /* wgsl */ `
-            @group(0) @binding(0) var<storage, read_write> vertex_buffer: array<vec4<f32>>;
-            @group(0) @binding(1) var<storage, read_write> cp_buffer : array<vec4<f32>>;
 
-            struct patchInfo {
-                index_offset: u32,
-                u_deg : u32,
-                v_deg : u32,
-            }
-            @group(0) @binding(2) var<uniform> p : patchInfo;
+        // ====================
+        // Create the position and index buffers for each chunk
+        // ====================
 
-            @compute @workgroup_size(1) fn initPatch() {
-                // "highest (subdivision) level"
-                const hl : u32 = 6;
-                // (2 ^ hl), so for hl=6 this is 64
-                const max_quads = 1 << hl;
-
-                for (var i : u32 = 0; i <= p.u_deg; i++) {
-                    for (var j : u32 = 0; j <= p.v_deg; j++) {
-                        let src : u32 = ((p.v_deg+1) * i) + j;
-                        let dst : u32 = ((i * max_quads) * ((p.v_deg * max_quads) + 1)) + (j * max_quads);
-                        vertex_buffer[dst + p.index_offset] = cp_buffer[src];
-                    }
-                }
-            }
-            `,
-        });
-
-        const pipeline = this.device.createComputePipeline({
-            label: 'Quad. init. compute pipeline',
-            layout: 'auto',
-            compute: {
-                module: module,
-                entryPoint: 'initPatch',
-            },
-        });
-
-        const encoder = this.device.createCommandEncoder({
-            label: 'Quad. init. encoder',
-        });
-        const pass = encoder.beginComputePass({
-            label: 'Quad. init. pass', 
-        });
-        pass.setPipeline(pipeline);
-
-        // dude, we can just do this for the patch-specific pipelines/passes 
-        // initModules = {
-        //      quad: quadInitShaderModule,
-        //      tri : triInitShaderModule,
-        //      PNQuad: PNQuadInitShaderModule,
-        //      ...
-        // }
-        //
-        // initPipelines = {
-        //      quad: ...
-        //      ... (you get the idea)
-        // }
-        //
-        // from there, we just need a nice way to actually change these.
-        // i'm thinking of just using the same approach that we currently have,
-        // i.e. we have a function defined on the patch objects that will
-        // fill in all this STUFF for us. that should work fine, and would
-        // help to break apart all this information. the only thing, though,
-        // is...
-        //
-        // well, no, i was going to say "oh, but these WebGPU objects are all one-time use,
-        // so that means we won't have a good way to "
-        //
-
-        for (const [i, chunk] of this.chunks.entries()) {
+        for (const chunk of this.chunks) {
             // Create the position buffer for the entire chunk
             const positionBuffer = new THREE.StorageBufferAttribute(
                 chunk.byteSize / (4 * 4),
@@ -157,20 +149,17 @@ export class BvGroup extends THREE.Group {
             chunk.mesh.geometry.setAttribute("position", positionBuffer);
             this.renderer.backend.createStorageAttribute(chunk.mesh.geometry.getAttribute("position"));
 
-            // TODO: remove this?
+            // TODO: remove this
             chunk.positionStorage = storage(
                 chunk.mesh.geometry.getAttribute("position"),
                 "vec4",
                 chunk.mesh.geometry.getAttribute("position").count,
             );
 
-            // ====================
             // Create the index buffer for the entire chunk
             // TODO: precalc. the size of this (and just do this more efficiently)
             // (precalc size of array buffer and then create a single Uint32Array TypedArray,
             //  with each patch writing into that array at a given offset)
-            // ====================
-
             const indices = [];
             for (const patch of chunk.patches) {
                 indices.push(...patch.getIndexBuffer(0));
@@ -180,43 +169,34 @@ export class BvGroup extends THREE.Group {
             chunk.mesh.geometry.setIndex(typedIndices);
             chunk.mesh.geometry.index.version++;
             chunk.indexBuffers[0] = typedIndices;
+        }
 
-            // ====================
-            // Run the init compute fns. to copy a bunch of stuff to the vertex buffer
-            // TODO: this only works on quads! fix that!
-            // ====================
 
+        // ====================
+        // Initialize patches, use shaders to copy control points to correct locations
+        // in the position buffer
+        // ====================
+
+        const pipeline = getResource(this.device, 'quad', 'computePipeline');
+
+        // TODO: this only works on quads! fix that!
+        const encoder = this.device.createCommandEncoder({
+            label: 'Quad. init. encoder',
+        });
+        const pass = encoder.beginComputePass({
+            label: 'Quad. init. pass', 
+        });
+        pass.setPipeline(pipeline);
+
+        for (const chunk of this.chunks) {
             // The GPUBuffer that points to this chunk's vertex buffer
-            const chunkGPUBuffer = this.renderer.backend.get(
+            const chunkPosBuffer = this.renderer.backend.get(
                 chunk.mesh.geometry.getAttribute('position')
             ).buffer;
 
-            for (const [j, patch] of chunk.patches.entries()) {
-                // The GPUBuffer that points to this patch's control point buffer
-                const patchGPUBuffer = this.renderer.backend.get(patch.cpBuffer).buffer;
-
-                // index_offset(u32) + u_deg(u32) + v_deg(u32)
-                const uniformBufferSize = (4) + (4) + (4);
-                const uniformBuffer = this.device.createBuffer({
-                    label: `Uniforms for (chunk, patch): (${i}, ${j})`,
-                    size: uniformBufferSize,
-                    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-                });
-                const uniformValues = new Uint32Array([patch.indexOffset, patch.uDeg, patch.vDeg]);
-                this.device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
-
-                const bindGroup = this.device.createBindGroup({
-                    label: `Bind group for (chunk, patch): (${i}, ${j})`,
-                    layout: pipeline.getBindGroupLayout(0),
-                    entries: [
-                        {binding: 0, resource: chunkGPUBuffer },
-                        {binding: 1, resource: patchGPUBuffer },
-                        {binding: 2, resource: uniformBuffer },
-                    ]
-                });
-
-                pass.setBindGroup(0, bindGroup);
-                pass.dispatchWorkgroups(1);
+            for (const patch of chunk.patches) {
+                patch.bindGroupLayout = getResource(this.device, 'quad', 'bindGroupLayout');
+                patch.initPatch(this.renderer, pass, chunkPosBuffer);
             }
         }
         pass.end();
@@ -225,22 +205,10 @@ export class BvGroup extends THREE.Group {
         this.device.queue.submit([commandBuffer]);
 
 
-        // All patches in all chunks are now initialized.
+        // ====================
+        // Assign vertex shaders, materials to all chunks
+        // ====================
 
-        // Vertex shader to adjust all points by their rational value
-        // TODO: swap for WGSL?
-        const rationalVS = Fn(({ vertexBuffer}) => {
-            const w = float(vertexBuffer.element(vertexIndex).w);
-
-            // TODO: should we use another value than 1?
-            If (equal(w, 0), () => {
-                w.assign(1);
-            });
-
-            return div(positionGeometry, w);
-        });
-
-        // Assign a material and a vertex shader to all meshes
         for (const chunk of this.chunks) {
 
             const material = new THREE.MeshStandardNodeMaterial({
@@ -248,21 +216,24 @@ export class BvGroup extends THREE.Group {
                 wireframe: false,
             });
             const wireframeMaterial = new THREE.MeshBasicNodeMaterial({
-                color: 0x000000,
+                // color: 0x000000,
+                color: 0xcccccc,
                 wireframe: true,
             });
 
-            material.positionNode = rationalVS({
-                vertexBuffer: chunk.positionStorage,
-            });
-            wireframeMaterial.positionNode = rationalVS({
-                vertexBuffer: chunk.positionStorage,
-            });
+            // material.positionNode = BvGroup.rationalVS({
+            //     vertexBuffer: chunk.positionStorage,
+            // });
+            // wireframeMaterial.positionNode = BvGroup.rationalVS({
+            //     vertexBuffer: chunk.positionStorage,
+            // });
 
             chunk.material = material;
             chunk.wireframeMaterial = wireframeMaterial;
 
+            // TODO : TESTING : REMOVE THIS
             chunk.mesh.material = material;
+            // chunk.mesh.material = wireframeMaterial;
         }
     }
 
@@ -272,48 +243,68 @@ export class BvGroup extends THREE.Group {
         }
 
         // need to subdivide the patch if a higher level than we've previously subdivided is requested
+
+        // TODO: this is obviously beyond rough, and currently only works for
+        // quad patches. currently still  need to decide on architecture for 
+        // storing webgpu resources overall, but these shaders and pipelines should
+        // only be created once, and globally, somewhere.
         if (newLevel > this.highestComputedLevel) {
-            const computeNodes = [];
+            const vShader = this.device.createShaderModule({
+                label: 'V Pass Shader',
+                code: Quad.vPassWGSL,
+            });
+            const vPipeline = this.device.createComputePipeline({
+                label: 'V Pass pipeline',
+                layout: 'auto', // TODO: create this independently and cache it
+                compute: {
+                    module: vShader,
+                },
+            });
+            const vLayout = vPipeline.getBindGroupLayout(0);
+
+            const uShader = this.device.createShaderModule({
+                label: 'U Pass Shader',
+                code: Quad.uPassWGSL,
+            });
+            const uPipeline = this.device.createComputePipeline({
+                label: 'u Pass pipeline',
+                layout: 'auto', // TODO: create this independently and cache it
+                compute: {
+                    module: uShader,
+                },
+            });
+            const uLayout = uPipeline.getBindGroupLayout(0);
+
+
+            const encoder = this.device.createCommandEncoder({
+                label: `setLevel encoder (lvl ${this.highestComputedLevel} -> lvl ${newLevel}) `,
+            });
+            const pass = encoder.beginComputePass({
+                label: `setLevel pass (lvl ${this.highestComputedLevel} -> lvl ${newLevel}) `,
+            });
+
             for (const chunk of this.chunks) {
+                const chunkPosBuffer = this.renderer.backend.get(
+                    chunk.mesh.geometry.getAttribute('position')
+                ).buffer;
+
                 for (const patch of chunk.patches) {
-                    // (get all the compute nodes)
-                    computeNodes.push(
-                        ...patch.getSubdivComputeNodes(
-                            chunk.positionStorage,
-                            this.highestComputedLevel,
-                            newLevel,
-                        ),
-                    );
+                    // TODO: this is where we need to add, like, everything
+                    patch.subdivPatch({
+                        vPipeline: vPipeline,
+                        uPipeline: uPipeline,
+                        renderer: this.renderer,
+                        pass: pass,
+                        chunkPosBuffer: chunkPosBuffer,
+                        highestComputedLevel: this.highestComputedLevel,
+                        newLevel: newLevel,
+                    });
                 }
             }
+            pass.end();
 
-            // TESTING: remove this
-            const mode = '';
-            if (mode === 'TIMING') {
-                const oldHighestLevel = this.highestComputedLevel;
-                console.time("setLevel");
-                this.renderer
-                    .resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE)
-                    .then(() => {
-                        console.time("ThreeJS rsrc. creation");
-                        this.renderer.computeAsync(computeNodes).then(() => {
-                            console.timeEnd("setLevel")
-
-                            this.renderer
-                                .resolveTimestampsAsync(
-                                    THREE.TimestampQuery.COMPUTE,
-                                )
-                                .then((ms) => {
-                                    console.log(
-                                        `Compute: ${oldHighestLevel} -> ${newLevel} took ${ms.toFixed(3)}ms on the GPU`,
-                                    );
-                                });
-                        });
-                        console.timeEnd("ThreeJS rsrc. creation");
-                    });
-            } else {
-                this.renderer.compute(computeNodes);
-            }
+            const commandBuffer = encoder.finish();
+            this.device.queue.submit([commandBuffer]);
 
             this.highestComputedLevel = newLevel;
         }
@@ -342,4 +333,18 @@ export class BvGroup extends THREE.Group {
             }
         }
     }
+
+    // Vertex shader to adjust all points by their rational value
+    // TODO: swap for WGSL?
+    static rationalVS = Fn(({ vertexBuffer}) => {
+        const w = float(vertexBuffer.element(vertexIndex).w);
+
+        // TODO: should we use another value than 1?
+        If (equal(w, 0), () => {
+            w.assign(1);
+        });
+
+        return div(positionGeometry, w);
+    });
+ 
 }
