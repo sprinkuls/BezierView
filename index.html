@@ -23,7 +23,9 @@
                 "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
                 "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
-                "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+                "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm",
+
+                "stats-gl": "https://cdn.jsdelivr.net/npm/stats-gl@4.2.3/+esm"
             }
         }
         </script>
@@ -31,12 +33,16 @@
         <script type="module">
         import * as THREE from 'three/webgpu';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import {state, setupGui, setGuiModel} from './stateManager.js';
+        import {state, setupGui} from './stateManager.js';
         import {BvLoader} from './BvLoader.js';
+        import Stats from 'stats-gl';
+        import * as Rsrc from './rsrc.js';
+
 
         let camera, scene, renderer, light1, light2, light3, controls, time = 0;
         const timer = new THREE.Timer();
         let gui;
+        let stats;
 
         // holds the full file that was loaded, not just one patch. this is a THREE group
         // that contains BvGroup objects for each "Group" listed in the .bv file
@@ -48,6 +54,9 @@
         // in stateManager and then, based on those options, either turn these things
         // on or off?
         async function init() {
+            // ==================== Stats ====================
+            stats = new Stats({ trackGPU: true, });
+            document.body.appendChild(stats.dom);
 
             // ==================== Camera ====================
             camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
@@ -79,12 +88,15 @@
             scene.add( light3 );
 
             // ==================== Renderer ====================
-            renderer = new THREE.WebGPURenderer({ trackTimestamp: true, antialias: true });
+            renderer = new THREE.WebGPURenderer({ trackTimestamp: false, antialias: false });
             await renderer.init();
 
             if (renderer.backend.isWebGPUBackend === false){
                 throw new Error('WebGPU is not supported by your browser');
             }
+
+            stats.init(renderer);
+            Rsrc.init(renderer);
 
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -93,29 +105,23 @@
 
             // ==================== Controls ====================
             controls = new OrbitControls(camera, renderer.domElement);
-            //TESTING: remove this
+            // //TESTING: remove this
             controls.autoRotate = true;
             controls.autoRotateSpeed = 2.0;
 
             // ==================== Events ====================
             window.addEventListener('resize', onWindowResize);
 
-            // ==================== Default Model ====================
-            const response = await fetch('data/5/logo.bv');
-            const text = await response.text();
-            const bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
-            bvFile = bvLoader.parse(text);
-            scene.add(bvFile);
-
-            // ==================== GUI ====================
+            // ==================== GUI / State manager ====================
             gui = setupGui({
                 scene: scene,
                 renderer: renderer,
                 light1: light1,
                 light2: light2,
                 light3: light3,
-                initBvFile: bvFile
+                initBvFile: './data/5/logo.bv'
             });
+
         }
 
         function onWindowResize() {
@@ -128,22 +134,14 @@
             render();
         }
 
-        // TESTING: remove this
-        let count = 3;
         function render() {
-            count--;
-            if (count === 0) {
-                console.log("AH!");
-                for (const bvGroup of bvFile.children) {
-                    bvGroup.setLevel(2);
-                }
-            }
             timer.update()
             const delta = timer.getDelta();
             time += delta;
 
             // TESTING: remove this
             controls.update();
+            stats.update();
 
             // render
             renderer.resolveTimestampsAsync( THREE.TimestampQuery.RENDER );

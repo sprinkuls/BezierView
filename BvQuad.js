@@ -195,23 +195,12 @@ export class BvQuad {
         this.indexOffset = -1;
         // set later when this patch is being initialized
         this.uniformBuffer = -1; // GPUBuffer that holds uDeg/vDeg/indexOffset
-        this.bindGroupLayout = -1; // GPUBindGroupLayout
     }
 
     getMemNeededBytes() {
         // (number of vertices) * (4 bytes per float32) * (4 float32s per vertex)
         // (even if we request a vec3 we're always actually getting a vec4 under the hood)
         return (((this.uDeg * 64) + 1) * ((this.vDeg * 64) + 1)) * 4 * 4;
-    }
-
-    getInitComputeNode(positionStorage) {
-        return initPatch({
-            cpBuffer: this.cpBuffer,
-            positionStorage: positionStorage,
-            uDeg: this.uDeg,
-            vDeg: this.vDeg,
-            indexOffset: this.indexOffset
-        }).compute(1);
     }
 
     // Adds dispatches to the passed-in GPUComputePassEncoder that will
@@ -224,30 +213,27 @@ export class BvQuad {
     //       since this patch doesn't know what came before or after it, it
     //       doesn't have enough information to make that decision.
     //
-    // TODO: ugly signature, maybe just store chunkVB on the patch since it
-    //       should be static
-    initPatch(renderer, pass, chunkPosBuffer) {
-        const device = renderer.backend.device;
-        // The GPUBuffer that points to this patch's control point buffer
-        const patchCPBuffer = renderer.backend.get(this.cpBuffer).buffer;
+    initPatch(rsrc, pass, chunkPosBuffer) {
+        // The GPUBuffer for this patch's control points
+        const patchCPBuffer = rsrc.backend.get(this.cpBuffer).buffer;
 
         // index_offset(u32) + u_deg(u32) + v_deg(u32)
         const uniformBufferSize = (4) + (4) + (4);
-        const uniformBuffer = device.createBuffer({
+        const uniformBuffer = rsrc.device.createBuffer({
             label: `Patch info uniform (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
             size: uniformBufferSize,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         const uniformValues = new Uint32Array([this.indexOffset, this.uDeg, this.vDeg]);
-        device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+        rsrc.device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
 
         this.uniformBuffer = uniformBuffer;
 
         // TODO: cache these based on some key that isn't tied to indexOffset (and perhaps not to
         //       the chunk's position buffer either)
-        const bindGroup = device.createBindGroup({
+        const bindGroup = rsrc.device.createBindGroup({
             label: `Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
-            layout: this.bindGroupLayout,
+            layout: rsrc.quad.init.bindGroupLayout,
             entries: [
                 {binding: 0, resource: chunkPosBuffer },
                 {binding: 1, resource: patchCPBuffer },
@@ -334,15 +320,10 @@ export class BvQuad {
     }
 
 
-    // TODO: this signature is terrible; generally need to decide how to architect access to
-    // all webgpu resources, this is only like this as a "webgpu and wgsl work" proof of concept
-    subdivPatch({vPipeline, uPipeline, renderer, pass, chunkPosBuffer, highestComputedLevel, newLevel}) {
+    subdivPatch({rsrc, pass, chunkPosBuffer, highestComputedLevel, newLevel}) {
         if (highestComputedLevel >= newLevel) {
             throw new Error();
         }
-        const device = renderer.backend.device;
-        const vLayout = vPipeline.getBindGroupLayout(0);
-        const uLayout = uPipeline.getBindGroupLayout(0);
 
         for (let currLevel = highestComputedLevel; currLevel < newLevel; currLevel++) {
             // "number of quads per dimension"
@@ -366,20 +347,20 @@ export class BvQuad {
             // ====================
             // V Pass
             // ====================
-            pass.setPipeline(vPipeline);
+            pass.setPipeline(rsrc.quad.subdiv.vPipeline);
 
             // uniform to send the # of invocations for this shader, along with the current
             // highest computed level
             const vShaderInvocations = ((nqpd*this.uDeg)+1)*nqpd;
-            const vInvocationsBuffer = device.createBuffer({
+            const vInvocationsBuffer = rsrc.device.createBuffer({
                 size: 8, // two u32
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             });
-            device.queue.writeBuffer(vInvocationsBuffer, 0, new Uint32Array([vShaderInvocations, currLevel]));
+            rsrc.device.queue.writeBuffer(vInvocationsBuffer, 0, new Uint32Array([vShaderInvocations, currLevel]));
 
-            const vBindGroup = device.createBindGroup({
+            const vBindGroup = rsrc.device.createBindGroup({
                 label: `V Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
-                layout: vLayout,
+                layout: rsrc.quad.subdiv.vLayout,
                 entries: [
                     {binding: 0, resource: chunkPosBuffer },
                     {binding: 1, resource: this.uniformBuffer },
@@ -394,20 +375,20 @@ export class BvQuad {
             // ====================
             // U Pass
             // ====================
-            pass.setPipeline(uPipeline);
+            pass.setPipeline(rsrc.quad.subdiv.uPipeline);
 
             // uniform to send the # of invocations for this shader, along with the current
             // highest computed level
             const uShaderInvocations = ((nqpd*this.vDeg*2)+1)*nqpd;
-            const uInvocationsBuffer = device.createBuffer({
-                size: 8, // one u32
+            const uInvocationsBuffer = rsrc.device.createBuffer({
+                size: 8, // two u32
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             });
-            device.queue.writeBuffer(uInvocationsBuffer, 0, new Uint32Array([uShaderInvocations, currLevel]));
+            rsrc.device.queue.writeBuffer(uInvocationsBuffer, 0, new Uint32Array([uShaderInvocations, currLevel]));
 
-            const uBindGroup = device.createBindGroup({
+            const uBindGroup = rsrc.device.createBindGroup({
                 label: `U Bind group for (${this.indexOffset}, ${this.uDeg}, ${this.vDeg})`,
-                layout: uLayout,
+                layout: rsrc.quad.subdiv.uLayout,
                 entries: [
                     {binding: 0, resource: chunkPosBuffer },
                     {binding: 1, resource: this.uniformBuffer },

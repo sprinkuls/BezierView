@@ -1,7 +1,7 @@
-//import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { GUI } from 'lil-gui';
 import * as THREE from 'three/webgpu';
 import {BvLoader} from './BvLoader.js';
+import {rsrc} from './rsrc.js';
 
 const gui = new GUI();
 const controllers = [];
@@ -9,6 +9,7 @@ const controllers = [];
 let bvFile;
 let bvLoader;
 let scene_;
+let device;
 
 let groupHandle;
 
@@ -69,9 +70,9 @@ const state = {
 }
 
 function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
-
+    device = renderer.backend.device;
     scene_ = scene;
-    bvFile = initBvFile;
+    loadPresetBvFile(initBvFile);
 
     ////////////////////////////// 'Load File'
     ////////////////////////////////////////////////////
@@ -82,7 +83,7 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
 
     bvLoader = new BvLoader(THREE.DefaultLoadingManager, renderer);
     document.getElementById('fileInput').addEventListener('change', (event) => {
-        loadBVFile(event);
+        loadUserBvFile(event);
     });
 
     ////////////////////////////// 'Shader Settings'
@@ -204,11 +205,26 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
     displayFolder.add(state, 'patchDetail', detailOptions).name('Patch Detail')
         .setValue(2)
         .onChange((newLevel) => {
+
             console.log(`Setting level to: ${newLevel}`)
 
+            // create encoder/pass for ALL groups
+            const encoder = device.createCommandEncoder({
+                label: `setLevel encoder (lvl ${newLevel}) `,
+            });
+            const pass = encoder.beginComputePass({
+                label: `setLevel pass (lvl ${newLevel}) `,
+            });
+
             for (const bvGroup of bvFile.children) {
-                bvGroup.setLevel(newLevel);
+                bvGroup.setLevel(newLevel, pass);
             }
+
+            // submit for ALL groups at once
+            pass.end();
+            const commandBuffer = encoder.finish();
+            device.queue.submit([commandBuffer]);
+
         });
 
 
@@ -254,16 +270,6 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
     helpFolder.add(state, 'helpDummy').name(helpText).$widget.remove();
 
     return gui;
-}
-
-
-// file loading logic is just in main() since we need to access a bunch
-// of things, like the renderer and scene, that are just already in main.
-// so when main loads a file, we in here just get passed the handle to
-// the new file, and get to do all the other GUI stuff we need to
-function setGuiModel(newBvFile) {
-    // console.log("covered in gooey");
-    bvFile = newBvFile;
 }
 
 // effectively, we just loop through all of the controllers (the lil-gui
@@ -317,8 +323,7 @@ state.groupSettings = structuredClone(groupSettingsLocal);
 groupHandle.options(Object.keys(state.groupSettings));
 */
 
-// Load the file, parse the file, update the global state, update the GUI
-function loadBVFile(event) {
+function loadUserBvFile(event) {
     const file = event.target.files[0];
 
     if (!file) {
@@ -328,31 +333,51 @@ function loadBVFile(event) {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-        console.log("file loaded");
-
-        // remove the old model (if there is one) and clean up
-        if (bvFile) {
-            scene_.remove(bvFile);
-            for (const group of bvFile.children) {
-                for (const chunk of group.children) {
-                    chunk.geometry.dispose();
-                    chunk.material.dispose();
-                }
-            }
-        }
-
-        // (this is just the file's text)
+        console.log("user file loaded");
         const text = event.target.result;
-
-        bvFile = bvLoader.parse(text);
-        // TODO: set initial level to 2
-        // for (const bvGroup of bvFile.children) {
-        //     bvGroup.setLevel(2);
-        // }
-        scene_.add(bvFile);
+        addBvModel(text);
     }
-    // TODO: update the GUI now that a new model has been loaded (groups section, etc)
     reader.readAsText(file);
 }
 
-export { setupGui, state, setGuiModel };
+// TODO: use this to load the other presets (e.g. g2 cube)
+async function loadPresetBvFile(path) {
+    const response = await fetch(path);
+    const text = await response.text();
+    addBvModel(text);
+}
+
+// TODO: update the global state and GUI now that a new model has been loaded
+// (groups section, etc)
+function addBvModel(text) {
+    if (bvFile) {
+        scene_.remove(bvFile);
+        for (const group of bvFile.children) {
+            for (const chunk of group.children) {
+                chunk.geometry.dispose();
+                chunk.material.dispose();
+            }
+        }
+    }
+
+    bvFile = bvLoader.parse(text);
+    setSubdivLevel(bvFile, 2);
+    scene_.add(bvFile);
+}
+
+function setSubdivLevel(bvFile, newLevel) {
+    const encoder = rsrc.device.createCommandEncoder({
+        label: `setLevel encoder (lvl ${newLevel}) `,
+    });
+    const pass = encoder.beginComputePass({
+        label: `setLevel pass (lvl ${newLevel}) `,
+    });
+    for (const bvGroup of bvFile.children) {
+        bvGroup.setLevel(newLevel, pass);
+    }
+    pass.end();
+    const commandBuffer = encoder.finish();
+    rsrc.device.queue.submit([commandBuffer]);
+}
+
+export { setupGui, state };
