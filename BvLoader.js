@@ -211,7 +211,19 @@ class BvLoader extends Loader {
                             cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
                         }
                         this.renderer.backend.createStorageAttribute(cpBuffer);
-                        currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer));
+
+                        // (number of vertices) * (4 float32s per vertex) * (4 bytes per float32)
+                        const bbSizeInBytes = (((uDeg * 64) + 1) * ((vDeg * 64) + 1)) * 4 * 4;
+
+                        // mappedAtCreation is false because we just want a big empty buffer on the GPU
+                        // side; we don't have some array to copy from the CPU to the GPU
+                        const bbBuffer = this.renderer.backend.device.createBuffer({
+                            label: `bbBuffer for quad  (u=${uDeg}, v=${vDeg})`,
+                            size: bbSizeInBytes,
+                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                            mappedAtCreation: false,
+                        })
+                        currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer, bbBuffer));
 
                         break;
                     }

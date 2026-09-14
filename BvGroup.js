@@ -11,7 +11,13 @@ function Chunk() {
         byteSize: 0,
         // for the 7 subdiv. levels, 0 to 6
         indexBuffers: new Array(7),
+
+        positionBuffer: -1,
+        normalBuffer: -1,
+        curvatureBuffer: -1,
+
         mesh: new THREE.Mesh(),
+
         // will be assigned to a storageBufferAttribute once needed size is known
         positionStorage: -1,
     };
@@ -23,88 +29,125 @@ export class BvGroup extends THREE.Group {
      * @param {string} name
      * @param {[{}]} patches
      */
+
     constructor(name, patches) {
         super();
         this.name = name;
-
-        /** @type {int} */
         this.highestComputedLevel = 0;
 
         /** @type {[Chunk]} */
         this.chunks = [];
-        this.chunks.push(Chunk());
+        // always have SOMETHING in a group, hence at least one group
+        this.chunks.push(Chunk()); 
 
-        ////////// assign each patch a location in the large chunk buffer //////////
+        // ====================
+        // Assign each patch a piece of the chunk's pos/normal/curvature buffers
+        // ====================
 
         // 134,217,728 bytes (128MiB) is the smallest guaranteed storage buffer size
         // so split up data into chunks NO LARGER THAN 128MiB
         // TODO: check for greater device-specific alloc. limit during initialization
         const maxChunkSize = 134_217_728;
+        const byteSize = 5722 * 4 * 4;
 
         let byteOffset = 0;
         for (const patch of patches) {
-            const byteSize = patch.getMemNeededBytes();
+            // if not enough space for this patch, create a new chunk
             if (byteOffset + byteSize > maxChunkSize) {
-                // create a new chunk
                 this.chunks.at(-1).byteSize = byteOffset;
+                this.chunks.push(Chunk());
 
                 byteOffset = 0;
-                this.chunks.push(Chunk());
             }
-            patch.byteOffset = byteOffset;
-            // each point is 4 Float32s (even vec3s are vec4s under the hood)
-            patch.indexOffset = byteOffset / (4 * 4); 
+
+            patch.indexOffset = byteOffset >> 4;
             this.chunks.at(-1).patches.push(patch);
             this.chunks.at(-1).byteSize += byteSize;
-
             byteOffset += byteSize;
-            // console.log(`${maxChunkSize} vs ${byteOffset}`);
         }
 
-        let lens = 0;
+        // now that all chunks are created, add their meshes to this BvGroup so THREE displays them
         for (const chunk of this.chunks) {
-            // since BvGroup is extending a THREE group, we add all the
-            // chunk meshes to this group
             this.add(chunk.mesh);
-            lens += chunk.patches.length;
         }
+
         // TESTING: remove this
-        console.log(`Total # of patches: ${lens}`);
+        let nrOfPatches = 0;
+        for (const chunk of this.chunks) {
+            nrOfPatches += chunk.patches.length;
+        }
+        console.log(`Total # of patches: ${nrOfPatches}`);
 
 
         // ====================
-        // Create the position and index buffers for each chunk
+        // Create position, normal, curvature, and index buffers for each chunk 
         // ====================
 
         for (const chunk of this.chunks) {
-            // Create the position buffer for the entire chunk
+            // Position buffer
             const positionBuffer = new THREE.StorageBufferAttribute(
                 chunk.byteSize / (4 * 4),
                 4,
             );
             chunk.mesh.geometry.setAttribute("position", positionBuffer);
             rsrc.backend.createStorageAttribute(chunk.mesh.geometry.getAttribute("position"));
+            chunk.positionBuffer = rsrc.backend.get(chunk.mesh.geometry.getAttribute("position")).buffer;
 
-            // this is kept around because our vertex shaders are still written in TSL
+            // this is kept around because our rational vertex shaders are still written in TSL
             chunk.positionStorage = storage(
                 chunk.mesh.geometry.getAttribute("position"),
                 "vec4",
                 chunk.mesh.geometry.getAttribute("position").count,
             );
 
-            // Create the index buffer for the entire chunk
-            // TODO: precalc. the size of this (and just do this more efficiently)
-            // (precalc size of array buffer and then create a single Uint32Array TypedArray,
-            //  with each patch writing into that array at a given offset)
-            const indices = [];
-            for (const patch of chunk.patches) {
-                indices.push(...patch.getIndexBuffer(0));
-            }
-            const typedIndices = new THREE.Uint32BufferAttribute(indices, 1);
 
-            chunk.mesh.geometry.setIndex(typedIndices);
+            // Normal buffer
+            const normalBuffer = new THREE.StorageBufferAttribute(
+                chunk.byteSize / (4 * 4),
+                4,
+            );
+            // const normalBuffer = new THREE.StorageBufferAttribute(
+            //     new Float32Array([
+            //          1,  1, 1, 1,
+            //          1,  1, 1, 1,
+            //          1, -1, 1, 1,
+            //          1, -1, 1, 1,
+            //     ]),
+            //     4,
+            // );
+            chunk.mesh.geometry.setAttribute("normal", normalBuffer);
+            rsrc.backend.createStorageAttribute(chunk.mesh.geometry.getAttribute("normal"));
+            chunk.normalBuffer = rsrc.backend.get(chunk.mesh.geometry.getAttribute("normal")).buffer;
+
+
+            // Curvature buffer
+            const curvatureBuffer = new THREE.StorageBufferAttribute(
+                chunk.byteSize / (4 * 4),
+                3,
+            );
+            chunk.mesh.geometry.setAttribute("curvature", curvatureBuffer);
+            rsrc.backend.createStorageAttribute(chunk.mesh.geometry.getAttribute("curvature"));
+            chunk.curvatureBuffer = rsrc.backend.get(chunk.mesh.geometry.getAttribute("curvature")).buffer;
+
+
+            // Index buffer
+            // TODO: nrIndices will be different once tris are in (3 per patch rather than 6)
+            const nrIndices = 6 * chunk.patches.length;
+            const indices = new Uint32Array(nrIndices);
+
+            let idx = 0;
+            for (const patch of chunk.patches) {
+                patch.getIndexBuffer(0, indices, idx);
+                idx += 6;
+            }
+            // TODO: TESTING: REMOVE ME
+            // console.log("indices:");
+            // console.log(indices);
+
+            const indexBuffer0 = new THREE.Uint32BufferAttribute(indices, 1);
+            chunk.indexBuffers[0] = indexBuffer0;
+            chunk.mesh.geometry.setIndex(indexBuffer0);
             chunk.mesh.geometry.index.version++;
-            chunk.indexBuffers[0] = typedIndices;
         }
 
 
@@ -119,18 +162,19 @@ export class BvGroup extends THREE.Group {
             label: 'Quad. init. encoder',
         });
         const pass = encoder.beginComputePass({
-            label: 'Quad. init. pass', 
+            label: 'Quad. init. pass',
         });
         pass.setPipeline(rsrc.quad.init.pipeline);
 
         for (const chunk of this.chunks) {
-            // The GPUBuffer that points to this chunk's position buffer
-            const chunkPosBuffer = rsrc.backend.get(
-                chunk.mesh.geometry.getAttribute('position')
-            ).buffer;
-
             for (const patch of chunk.patches) {
-                patch.initPatch(rsrc, pass, chunkPosBuffer);
+                patch.initPatch(
+                    rsrc,
+                    pass,
+                    chunk.positionBuffer,
+                    chunk.normalBuffer,
+                    chunk.curvatureBuffer
+                );
             }
         }
         pass.end();
@@ -145,11 +189,12 @@ export class BvGroup extends THREE.Group {
 
         for (const chunk of this.chunks) {
 
-            const material = new THREE.MeshStandardNodeMaterial({
-            // const material = new THREE.MeshPhongNodeMaterial({
-                color: 0x60a0ff,
+            // const material = new THREE.MeshStandardNodeMaterial({
+            const material = new THREE.MeshPhongNodeMaterial({
+                // color: 0x60a0ff,
+                color: 0x24837b,
                 wireframe: false,
-                roughness: 0.2,
+                // roughness: 0.2,
             });
             const wireframeMaterial = new THREE.MeshBasicNodeMaterial({
                 // color: 0x000000,
@@ -157,12 +202,12 @@ export class BvGroup extends THREE.Group {
                 wireframe: true,
             });
 
-            material.positionNode = BvGroup.rationalVS({
-                vertexBuffer: chunk.positionStorage,
-            });
-            wireframeMaterial.positionNode = BvGroup.rationalVS({
-                vertexBuffer: chunk.positionStorage,
-            });
+            // material.positionNode = BvGroup.rationalVS({
+            //     vertexBuffer: chunk.positionStorage,
+            // });
+            // wireframeMaterial.positionNode = BvGroup.rationalVS({
+            //     vertexBuffer: chunk.positionStorage,
+            // });
 
             chunk.material = material;
             chunk.wireframeMaterial = wireframeMaterial;
@@ -174,22 +219,20 @@ export class BvGroup extends THREE.Group {
     }
 
     setLevel(newLevel, pass) {
+        // console.log("i'm normal");
+        // console.log(this.chunks[0].mesh.geometry.attributes.normal);
+
         if (newLevel > 6 || newLevel < 0) {
             throw new Error();
         }
 
-        // need to subdivide the patch if a higher level than we've previously subdivided is requested
+        // Subdivide the patch if a higher level than we've previously subdivided is requested
         if (newLevel > this.highestComputedLevel) {
             for (const chunk of this.chunks) {
-                const chunkPosBuffer = rsrc.backend.get(
-                    chunk.mesh.geometry.getAttribute('position')
-                ).buffer;
-
                 for (const patch of chunk.patches) {
                     patch.subdivPatch({
                         rsrc,
                         pass,
-                        chunkPosBuffer: chunkPosBuffer,
                         highestComputedLevel: this.highestComputedLevel,
                         newLevel: newLevel,
                     });
@@ -197,29 +240,70 @@ export class BvGroup extends THREE.Group {
             }
 
             this.highestComputedLevel = newLevel;
+
+            // if (newLevel >= this.highestComputedLevel) {
+            //     for (const chunk of this.chunks) {
+            //         for (const patch of chunk.patches) {
+            //             patch.calcNormals({
+            //                 rsrc,
+            //                 pass,
+            //                 level: newLevel,
+            //             });
+            //         }
+            //     }
+            // }
         }
 
-        // set index buffers
+        // Set index buffers
         // (we check index 0 of chunks because there will always be at least one chunk,
         // and all chunks will always be at the same level)
         if (this.chunks[0].indexBuffers[newLevel] !== undefined) {
             for (const chunk of this.chunks) {
                 chunk.mesh.geometry.setIndex(chunk.indexBuffers[newLevel]);
+                chunk.mesh.geometry.index.version++;
             }
         } else {
-            // console.log(`Chunk cache miss: level ${newLevel}`);
-            const indices = [];
+            for (const chunk of this.chunks) {
+                const indicesPerPatch = ((1 << newLevel) * (1 << newLevel)) * 6;
+                const nrIndices = indicesPerPatch * chunk.patches.length;
+                const indices = new Uint32Array(nrIndices);
+
+                let idx = 0;
+                for (const patch of chunk.patches) {
+                    patch.getIndexBuffer(newLevel, indices, idx);
+                    idx += indicesPerPatch;
+                }
+                const indexBuffer = new THREE.Uint32BufferAttribute(indices, 1);
+                chunk.indexBuffers[newLevel] = indexBuffer;
+                chunk.mesh.geometry.setIndex(indexBuffer);
+                chunk.mesh.geometry.index.version++;
+            }
+        }
+
+        // TODO: TESTING : REMOVE ME
+        // copy over the position buffer for debugging
+        // setTimeout(() => {
+        //     console.log(`running copy (level ${newLevel}...`);
+        //     rsrc.renderer.getArrayBufferAsync(
+        //         this.chunks[0].mesh.geometry.getAttribute("position")
+        //     ).then((rawBuffer) => {
+        //         const arr = Array.from(new Float32Array(rawBuffer));
+        //         console.log(arr.slice(52, Math.ceil((151 + 1) / 100) * 100));
+        //     });
+        // }, 3000);
+    }
+
+    // TODO: merge this into setLevel; broken out on its own for now to just get the thing working
+    calcNormals(level, pass) {
+        if (level >= this.highestComputedLevel) {
             for (const chunk of this.chunks) {
                 for (const patch of chunk.patches) {
-                    indices.push(...patch.getIndexBuffer(newLevel));
+                    patch.calcNormals({
+                        rsrc,
+                        pass,
+                        level,
+                    });
                 }
-                const typedIndices = new THREE.Uint32BufferAttribute(
-                    indices,
-                    1,
-                );
-                chunk.indexBuffers[newLevel] = typedIndices;
-                chunk.mesh.geometry.setIndex(typedIndices);
-                chunk.mesh.geometry.index.version++;
             }
         }
     }

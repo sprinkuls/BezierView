@@ -66,7 +66,8 @@
             // ==================== Scene ====================
             scene = new THREE.Scene();
             // scene.background = new THREE.Color( 0xeeeeee );
-            scene.background = new THREE.Color( 0x333333 );
+            // scene.background = new THREE.Color( 0x333333 );
+            scene.background = new THREE.Color( 0x1c1b1a);
             const gridHelper = new THREE.PolarGridHelper(2, 16);
             scene.add(gridHelper);
 
@@ -106,8 +107,8 @@
             // ==================== Controls ====================
             controls = new OrbitControls(camera, renderer.domElement);
             // //TESTING: remove this
-            controls.autoRotate = true;
-            controls.autoRotateSpeed = 2.0;
+            // controls.autoRotate = true;
+            // controls.autoRotateSpeed = 2.0;
 
             // ==================== Events ====================
             window.addEventListener('resize', onWindowResize);
@@ -120,8 +121,9 @@
                 light2: light2,
                 light3: light3,
                 initBvFile: './data/5/logo.bv'
+                // initBvFile: './data/8/rat1.bv'
+                // initBvFile: './data/may/deg_1x1_quad.bv'
             });
-
         }
 
         function onWindowResize() {

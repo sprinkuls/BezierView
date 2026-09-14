@@ -2,6 +2,7 @@
 import * as Quad from './BvQuad.js';
 
 export const rsrc = {
+    renderer: null,
     backend: null,
     device: null,
     quad: {
@@ -18,6 +19,11 @@ export const rsrc = {
             vPipeline: null,
             vLayout: null,
         },
+        normal: {
+            shader: null,
+            pipeline: null,
+            bindGroupLayout: null,
+        },
     },
     "tri": {
         "init": {
@@ -31,17 +37,19 @@ export const rsrc = {
 
 
 export function init(renderer) {
+    rsrc.renderer = renderer;
+
     const backend = renderer.backend;
     rsrc.backend = backend;
 
     const device = backend.device;
     rsrc.device = device;
 
-    ////////////////////
+    // ========================================
     // BvQuad resources
-    ////////////////////
+    // ========================================
 
-    // init resources
+    // ========== init resources ==========
     rsrc.quad.init.shader = rsrc.device.createShaderModule({
         label: 'Quad. init. shader module',
         code: Quad.initPatchWGSL,
@@ -55,9 +63,8 @@ export function init(renderer) {
     });
     rsrc.quad.init.bindGroupLayout = rsrc.quad.init.pipeline.getBindGroupLayout(0);
 
-    // subdiv resources
-
-    // V-pass resources
+    // ========== subdiv resources ==========
+    // V-pass
     rsrc.quad.subdiv.vShader = rsrc.device.createShaderModule({
         label: 'V Pass shader module',
         code: Quad.vPassWGSL,
@@ -70,7 +77,7 @@ export function init(renderer) {
         },
     });
     rsrc.quad.subdiv.vLayout = rsrc.quad.subdiv.vPipeline.getBindGroupLayout(0);
-    // U-pass resources
+    // U-pass
     rsrc.quad.subdiv.uShader = rsrc.device.createShaderModule({
         label: 'U Pass shader module',
         code: Quad.uPassWGSL,
@@ -84,7 +91,22 @@ export function init(renderer) {
     });
     rsrc.quad.subdiv.uLayout = rsrc.quad.subdiv.uPipeline.getBindGroupLayout(0);
 
-    ////////////////////
-    // BvTri resources
-    ////////////////////
+    // ========== normal resources ==========
+    rsrc.quad.normal.shader = rsrc.device.createShaderModule({
+        label: 'Quad. normal shader module',
+        code: Quad.normalWGSL,
+    });
+    rsrc.quad.normal.pipeline = rsrc.device.createComputePipeline({
+        label: 'Quad. normal compute pipeline',
+        layout: 'auto',
+        compute: {
+            module: rsrc.quad.normal.shader,
+        },
+    });
+    rsrc.quad.normal.bindGroupLayout = rsrc.quad.normal.pipeline.getBindGroupLayout(0);
+
+
+    // ========================================
+    // BvQuad resources
+    // ========================================
 }

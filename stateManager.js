@@ -6,6 +6,8 @@ import {rsrc} from './rsrc.js';
 const gui = new GUI();
 const controllers = [];
 
+const DEFAULT_SUBDIV_LEVEL = 4;
+
 let bvFile;
 let bvLoader;
 let scene_;
@@ -89,7 +91,8 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
     ////////////////////////////// 'Shader Settings'
     //////////////////////////////////////////////////
 
-    const shaderSettingsFolder = gui.addFolder('Shader Settings').close();
+    const shaderSettingsFolder = gui.addFolder('Shader Settings')
+    // .close();
     const flipNormals = shaderSettingsFolder.add(state.groupSettings["All Groups"], 'flipNormals').name('Flip Normals').onChange(propogateState('flipNormals'));
     const flatShading = shaderSettingsFolder.add(state.groupSettings["All Groups"], 'flatShading').name('Flat Shading').onChange(propogateState('flatShading'));
     const highlightLines = shaderSettingsFolder.add(state.groupSettings["All Groups"], 'highlightLines').name('Highlight Lines').onChange(propogateState('highlightLines'));
@@ -203,29 +206,8 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
         '64 × 64': 6
     };
     displayFolder.add(state, 'patchDetail', detailOptions).name('Patch Detail')
-        .setValue(2)
-        .onChange((newLevel) => {
-
-            console.log(`Setting level to: ${newLevel}`)
-
-            // create encoder/pass for ALL groups
-            const encoder = device.createCommandEncoder({
-                label: `setLevel encoder (lvl ${newLevel}) `,
-            });
-            const pass = encoder.beginComputePass({
-                label: `setLevel pass (lvl ${newLevel}) `,
-            });
-
-            for (const bvGroup of bvFile.children) {
-                bvGroup.setLevel(newLevel, pass);
-            }
-
-            // submit for ALL groups at once
-            pass.end();
-            const commandBuffer = encoder.finish();
-            device.queue.submit([commandBuffer]);
-
-        });
+        .setValue(DEFAULT_SUBDIV_LEVEL)
+        .onChange((newLevel) => setSubdivLevel(newLevel));
 
 
 
@@ -361,23 +343,36 @@ function addBvModel(text) {
     }
 
     bvFile = bvLoader.parse(text);
-    setSubdivLevel(bvFile, 2);
+    // TODO: TESTING: UNCOMMENT THIS
+    // setSubdivLevel(DEFAULT_SUBDIV_LEVEL);
     scene_.add(bvFile);
 }
 
-function setSubdivLevel(bvFile, newLevel) {
+function setSubdivLevel(newLevel) {
+    // TODO: we don't need to create the encoder/pass
+    // if we're going to a level we've already been at before
     const encoder = rsrc.device.createCommandEncoder({
         label: `setLevel encoder (lvl ${newLevel}) `,
     });
     const pass = encoder.beginComputePass({
         label: `setLevel pass (lvl ${newLevel}) `,
     });
+
+    // subdiv / normals
     for (const bvGroup of bvFile.children) {
         bvGroup.setLevel(newLevel, pass);
     }
+
     pass.end();
     const commandBuffer = encoder.finish();
+
+    const t0 = performance.now();
     rsrc.device.queue.submit([commandBuffer]);
+
+    rsrc.device.queue.onSubmittedWorkDone().then(() => {
+      const t1 = performance.now();
+      console.log(`GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
+    });
 }
 
 export { setupGui, state };
