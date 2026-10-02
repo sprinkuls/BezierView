@@ -84,12 +84,25 @@
             light2.position.set( -1.41, 1, 0 );
             scene.add( light2 );
 
-            light3 = new THREE.DirectionalLight( 0xffffff, 0 );
+            light3 = new THREE.DirectionalLight( 0xffffff, 5 );
             light3.position.set( 1, 1, -1 );
             scene.add( light3 );
 
             // ==================== Renderer ====================
-            renderer = new THREE.WebGPURenderer({ trackTimestamp: false, antialias: false });
+            const adapter = await navigator.gpu.requestAdapter();
+            console.log(`maxBufferSize: ${adapter.limits.maxBufferSize}`)
+            console.log(`maxStorageBufferBindingSize: ${adapter.limits.maxStorageBufferBindingSize}`)
+            console.log(`minStorageBufferOffsetAlignment: ${adapter.limits.minStorageBufferOffsetAlignment}`)
+
+            // renderer = new THREE.WebGPURenderer({ trackTimestamp: false, antialias: true });
+            renderer = new THREE.WebGPURenderer({
+                requiredLimits: {
+                    maxBufferSize: adapter.limits.maxBufferSize,
+                    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                },
+                trackTimestamp: false,
+                antialias: false,
+            });
             await renderer.init();
 
             if (renderer.backend.isWebGPUBackend === false){
@@ -97,7 +110,7 @@
             }
 
             stats.init(renderer);
-            Rsrc.init(renderer);
+            await Rsrc.init(renderer, adapter);
 
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -122,6 +135,7 @@
                 light3: light3,
                 initBvFile: './data/5/logo.bv'
                 // initBvFile: './data/8/rat1.bv'
+                // initBvFile: './data/4/tpt_grp.bv'
                 // initBvFile: './data/may/deg_1x1_quad.bv'
             });
         }

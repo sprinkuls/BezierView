@@ -19,6 +19,12 @@ export const rsrc = {
             vPipeline: null,
             vLayout: null,
         },
+        evaluate: {
+            shader: null,
+            pipeline: null,
+            bindGroupLayout: null,
+        },
+        // TODO: remove this
         normal: {
             shader: null,
             pipeline: null,
@@ -36,7 +42,8 @@ export const rsrc = {
 }
 
 
-export function init(renderer) {
+export async function init(renderer, adapter) {
+    rsrc.adapter = adapter;
     rsrc.renderer = renderer;
 
     const backend = renderer.backend;
@@ -45,29 +52,29 @@ export function init(renderer) {
     const device = backend.device;
     rsrc.device = device;
 
+    // TODO: error handling for out of memory
+    const desiredSize = 536_870_912; // 512 MB
+    rsrc.honkinBuffer = device.createBuffer({
+        label: `big honkin scratch buffer`,
+        size: Math.min(adapter.limits.maxBufferSize, desiredSize),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: false,
+    });
+    console.log('after alloc');
+
     // ========================================
     // BvQuad resources
     // ========================================
 
-    // ========== init resources ==========
-    rsrc.quad.init.shader = rsrc.device.createShaderModule({
-        label: 'Quad. init. shader module',
-        code: Quad.initPatchWGSL,
-    });
-    rsrc.quad.init.pipeline = rsrc.device.createComputePipeline({
-        label: 'Quad. init. compute pipeline',
-        layout: 'auto',
-        compute: {
-            module: rsrc.quad.init.shader,
-        },
-    });
-    rsrc.quad.init.bindGroupLayout = rsrc.quad.init.pipeline.getBindGroupLayout(0);
-
     // ========== subdiv resources ==========
     // V-pass
+    // TODO: this
+    const va = await fetch("v_pass.wgsl");
+    const vb = await va.text();
     rsrc.quad.subdiv.vShader = rsrc.device.createShaderModule({
         label: 'V Pass shader module',
-        code: Quad.vPassWGSL,
+        // code: Quad.vPassWGSL,
+        code: vb,
     });
     rsrc.quad.subdiv.vPipeline = rsrc.device.createComputePipeline({
         label: 'V Pass compute pipeline',
@@ -77,10 +84,15 @@ export function init(renderer) {
         },
     });
     rsrc.quad.subdiv.vLayout = rsrc.quad.subdiv.vPipeline.getBindGroupLayout(0);
+
     // U-pass
+    // TODO: this
+    const ua = await fetch("u_pass.wgsl");
+    const ub = await ua.text();
     rsrc.quad.subdiv.uShader = rsrc.device.createShaderModule({
         label: 'U Pass shader module',
-        code: Quad.uPassWGSL,
+        // code: Quad.uPassWGSL,
+        code: ub,
     });
     rsrc.quad.subdiv.uPipeline = rsrc.device.createComputePipeline({
         label: 'u Pass compute pipeline',
@@ -91,19 +103,24 @@ export function init(renderer) {
     });
     rsrc.quad.subdiv.uLayout = rsrc.quad.subdiv.uPipeline.getBindGroupLayout(0);
 
-    // ========== normal resources ==========
-    rsrc.quad.normal.shader = rsrc.device.createShaderModule({
-        label: 'Quad. normal shader module',
-        code: Quad.normalWGSL,
+    // ========== evaluate resources ==========
+
+    // TOOD: this
+    const ea = await fetch("evaluate_quad.wgsl");
+    const eb = await ea.text();
+    rsrc.quad.evaluate.shader = rsrc.device.createShaderModule({
+        label: 'Quad. evaluate shader module',
+        // code: Quad.evaluateWGSL,
+        code: eb
     });
-    rsrc.quad.normal.pipeline = rsrc.device.createComputePipeline({
-        label: 'Quad. normal compute pipeline',
+    rsrc.quad.evaluate.pipeline = rsrc.device.createComputePipeline({
+        label: 'Quad. evaluate compute pipeline',
         layout: 'auto',
         compute: {
-            module: rsrc.quad.normal.shader,
+            module: rsrc.quad.evaluate.shader,
         },
     });
-    rsrc.quad.normal.bindGroupLayout = rsrc.quad.normal.pipeline.getBindGroupLayout(0);
+    rsrc.quad.evaluate.bindGroupLayout = rsrc.quad.evaluate.pipeline.getBindGroupLayout(0);
 
 
     // ========================================

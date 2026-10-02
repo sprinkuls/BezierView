@@ -6,9 +6,9 @@ import {rsrc} from './rsrc.js';
 const gui = new GUI();
 const controllers = [];
 
-const DEFAULT_SUBDIV_LEVEL = 4;
+const DEFAULT_SUBDIV_LEVEL = 2;
 
-let bvFile;
+let bvModel;
 let bvLoader;
 let scene_;
 let device;
@@ -30,7 +30,7 @@ const state = {
     // Display
     light1: true,
     light2: false,
-    light3: false,
+    light3: true,
     boundingBox: false,
     patchDetail: 2,
 
@@ -207,7 +207,7 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
     };
     displayFolder.add(state, 'patchDetail', detailOptions).name('Patch Detail')
         .setValue(DEFAULT_SUBDIV_LEVEL)
-        .onChange((newLevel) => setSubdivLevel(newLevel));
+        .onChange((newLevel) => bvModel.setSubdivLevel(newLevel));
 
 
 
@@ -332,47 +332,16 @@ async function loadPresetBvFile(path) {
 // TODO: update the global state and GUI now that a new model has been loaded
 // (groups section, etc)
 function addBvModel(text) {
-    if (bvFile) {
-        scene_.remove(bvFile);
-        for (const group of bvFile.children) {
-            for (const chunk of group.children) {
-                chunk.geometry.dispose();
-                chunk.material.dispose();
-            }
-        }
+    if (bvModel) {
+        scene_.remove(bvModel);
+        bvModel.destroy();
     }
 
-    bvFile = bvLoader.parse(text);
+    bvModel = bvLoader.parse(text);
     // TODO: TESTING: UNCOMMENT THIS
-    // setSubdivLevel(DEFAULT_SUBDIV_LEVEL);
-    scene_.add(bvFile);
+    bvModel.setSubdivLevel(DEFAULT_SUBDIV_LEVEL);
+    scene_.add(bvModel);
 }
 
-function setSubdivLevel(newLevel) {
-    // TODO: we don't need to create the encoder/pass
-    // if we're going to a level we've already been at before
-    const encoder = rsrc.device.createCommandEncoder({
-        label: `setLevel encoder (lvl ${newLevel}) `,
-    });
-    const pass = encoder.beginComputePass({
-        label: `setLevel pass (lvl ${newLevel}) `,
-    });
-
-    // subdiv / normals
-    for (const bvGroup of bvFile.children) {
-        bvGroup.setLevel(newLevel, pass);
-    }
-
-    pass.end();
-    const commandBuffer = encoder.finish();
-
-    const t0 = performance.now();
-    rsrc.device.queue.submit([commandBuffer]);
-
-    rsrc.device.queue.onSubmittedWorkDone().then(() => {
-      const t1 = performance.now();
-      console.log(`GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
-    });
-}
 
 export { setupGui, state };

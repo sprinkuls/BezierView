@@ -1,7 +1,7 @@
 import {FileLoader, Float32BufferAttribute, Group, Loader} from 'three/webgpu';
 import {BvQuad} from './BvQuad.js';
 import {BvTri} from './BvTri.js';
-import {BvGroup} from './BvGroup.js';
+import {BvModel} from './BvModel.js';
 
 /**
  * A loader for the Bv format.
@@ -100,6 +100,8 @@ class BvLoader extends Loader {
      * @return {Group} The parsed Bv.
      */
     parse(text) {
+        console.time('text parsing');
+
         const groups = [];
         const unnamed = {
             name: "(unnamed group)",
@@ -111,88 +113,136 @@ class BvLoader extends Loader {
         const input = text.split(/\s+/);
         let idx = 0;
 
-        // utility fn to read (x, y, z) / (x, y, z, w) points from the file
+        const allQuads = [];
+        const allTris  = [];
+        const allPolys = [];
+
+        // TODO: can easily rewrite this to just use a Float32 array since we literally
+        // just need to size it to (numPoints * 4)
+
+        // utility fn to read (x, y, z) / (x, y, z, w) points from input
+        // note that this DOES modify 'idx'
         function readPoints(numPoints, isRational) {
-            let points = [];
-            // if the patch is rational, we need to read a 4th value
+            let points = new Float32Array(numPoints * 4);
+            let p_idx = 0;
+
             if (isRational) {
+                // if the patch is rational, we need to read the 4th 'W' value
                 for (let i = 0; i < numPoints; i++) {
-                    points.push(Number(input[idx++]));
-                    points.push(Number(input[idx++]));
-                    points.push(Number(input[idx++]));
-                    points.push(Number(input[idx++]));
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = Number(input[idx++]);
                 }
             } else {
                 for (let i = 0; i < numPoints; i++) {
-                    points.push(Number(input[idx++]));
-                    points.push(Number(input[idx++]));
-                    points.push(Number(input[idx++]));
-                    points.push(1);
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = Number(input[idx++]);
+                    points[p_idx++] = 1.0;
                 }
             }
             return points;
         }
 
+        // TODO: for storing control point buffers, it would be easy to e.g. create one array
+        // upfront for all control points, then while parsing simply record the offset in that array,
+        // instead of creating new CP buffers per-patch. then, also, to copy the data over
+        // we could either keep asking the GPU to just copy a range, or we could do the whole
+        // thing at once.
+        //
+        // only difficulty is of not necessarily knowing the size of the buffer we would need
+        // without first scanning the full input; maybe it would be fine to do a preliminary scan,
+        // and then just change our methodology throughout to use this additional info much better.
         while (idx < input.length && input[idx] !== '') {
             if (input[idx].toLowerCase() === "group") {
-                idx++; // consume group token
-                const groupID = Number(input[idx++]);
-                const groupName = input[idx++];
-                console.log(`new group: ${groupName}`);
+                // ====================
+                // Parse a group
+                // ====================
 
-                // check if group with this name already exists, and if not, create it
-                const foundGroup = groups.find(g => g.name === groupName);
-                if (foundGroup) {
-                    currentGroup = foundGroup;
+                // Need to consume "group" token
+                idx++;
+                const groupID = Number(input[idx++]); // TODO: when does this actually get used?
+                const groupName = input[idx++];
+
+                // Check if we've already seen this group while parsing;
+                // if we haven't, create it
+                const groupAlreadyExists = groups.find(g => g.name === groupName);
+                if (groupAlreadyExists) {
+                    // console.log(`preexisting group: ${groupName}`);
+                    currentGroup = groupAlreadyExists;
                 } else {
+                    // console.log(`new group: ${groupName}`);
                     const newGroup = {
                         name: groupName,
-                        patches: []
+                        patches: [],
+                        nrQuads: 0,
+                        nrTris: 0,
                     }
                     groups.push(newGroup);
                     currentGroup = newGroup;
                 }
             } else {
+                // ====================
+                // Parse a patch
+                // ====================
                 const patchType = Number(input[idx++]);
-
                 switch (patchType) {
-                    case 1: {
-                        throw new Error("TODO");
-                    }
+
+                    // ====================
+                    // Tri or rational tri
+                    // ====================
                     case 3:
                     case 11: {
                         const isRational = patchType === 11;
                         const deg = Number(input[idx++]);
-                        const numControlPoints = ((deg+2) * (deg+1)) / 2;
-                        // order control points like a lower triangular matrix, i.e.:
+                        const numControlPoints = ((deg+2) * (deg+1)) >> 1;
+                        // Order the control points like a lower triangular matrix, i.e.:
                         // 0
                         // 1 2
                         // 3 4 5
-                        const cpBufferInit = new Float32Array(numControlPoints * 4);
+                        const cpBufferCPU = new Float32Array(numControlPoints * 4);
                         for (let row = deg; row >= 0; row--) {
                             for (let col = 0; col < row + 1; col++) {
                                 const bufIdx = ((((row)*(row+1)) >> 1) + col) * 4;
-                                cpBufferInit[bufIdx]   = Number(input[idx++]);
-                                cpBufferInit[bufIdx+1] = Number(input[idx++]);
-                                cpBufferInit[bufIdx+2] = Number(input[idx++]);
+                                cpBufferCPU[bufIdx]   = Number(input[idx++]);
+                                cpBufferCPU[bufIdx+1] = Number(input[idx++]);
+                                cpBufferCPU[bufIdx+2] = Number(input[idx++]);
 
                                 if (isRational) {
-                                    cpBufferInit[bufIdx+3] = Number(input[idx++]);
+                                    cpBufferCPU[bufIdx+3] = Number(input[idx++]);
                                 } else {
-                                    cpBufferInit[bufIdx+3] = 1;
+                                    cpBufferCPU[bufIdx+3] = 1;
                                 }
                             }
                         }
 
-                        const cpBuffer = new Float32BufferAttribute(cpBufferInit, 4);
-                        this.renderer.backend.createStorageAttribute(cpBuffer);
-                        currentGroup.patches.push(new BvTri(patchType, deg, cpBuffer));
+                        const cpSizeInBytes = numControlPoints * 4 * 4;
+                        const cpBuffer = this.renderer.backend.device.createBuffer({
+                            label: `cpBuffer for tri (deg=${deg})`,
+                            size : cpSizeInBytes,
+                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                        });
+                        this.renderer.backend.device.queue.writeBuffer(
+                            cpBuffer,
+                            0,
+                            cpBufferCPU
+                        );
+
+                        const newTri = new BvTri(patchType, deg, cpBuffer)
+                        currentGroup.patches.push(newTri);
+                        allTris.push(newTri);
 
                         break;
                     }
+
+                    // ====================
+                    // Quad or rational quad
+                    // ====================
                     case 4:
                     case 5:
                     case 8: {
+                        const isRational = patchType === 8;
                         let uDeg, vDeg;
                         if (patchType === 4) {
                             uDeg = vDeg = Number(input[idx++]);
@@ -201,35 +251,61 @@ class BvLoader extends Loader {
                             vDeg = Number(input[idx++]);
                         }
 
+                        //////////
+                        // Create storage buffer for control points
+                        //////////
                         const numControlPoints = (uDeg + 1) * (vDeg + 1);
+                        const cpBufferCPU = readPoints(numControlPoints, isRational);
 
-                        let cpBuffer;
-                        if (patchType === 8) {
-                            // we have a rational point to read
-                            cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, true), 4);
-                        } else {
-                            cpBuffer = new Float32BufferAttribute(readPoints(numControlPoints, false), 4);
-                        }
-                        this.renderer.backend.createStorageAttribute(cpBuffer);
-
-                        // (number of vertices) * (4 float32s per vertex) * (4 bytes per float32)
-                        const bbSizeInBytes = (((uDeg * 64) + 1) * ((vDeg * 64) + 1)) * 4 * 4;
-
-                        // mappedAtCreation is false because we just want a big empty buffer on the GPU
-                        // side; we don't have some array to copy from the CPU to the GPU
-                        const bbBuffer = this.renderer.backend.device.createBuffer({
-                            label: `bbBuffer for quad  (u=${uDeg}, v=${vDeg})`,
-                            size: bbSizeInBytes,
+                        const cpBuffer = this.renderer.backend.device.createBuffer({
+                            label: `cpBuffer for quad (u=${uDeg}, v=${vDeg})`,
+                            size : cpBufferCPU.byteLength,
                             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-                            mappedAtCreation: false,
-                        })
-                        currentGroup.patches.push(new BvQuad(patchType, uDeg, vDeg, cpBuffer, bbBuffer));
+                        });
+                        this.renderer.backend.device.queue.writeBuffer(
+                            cpBuffer,
+                            0,
+                            cpBufferCPU
+                        );
+
+                        //////////
+                        // Create uniform buffer for u / v deg
+                        //////////
+                        const uniformValues = new Uint32Array([
+                            uDeg,
+                            vDeg,
+                        ]);
+                        const uniformBuffer = this.renderer.backend.device.createBuffer({
+                            label: `Patch info uniform (${uDeg}, ${vDeg})`,
+                            size : uniformValues.byteLength,
+                            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                        });
+                        this.renderer.backend.device.queue.writeBuffer(
+                            uniformBuffer,
+                            0,
+                            uniformValues
+                        );
+
+                        const newQuad = new BvQuad(patchType, uDeg, vDeg, cpBuffer, uniformBuffer);
+
+                        allQuads.push(newQuad);
+                        currentGroup.patches.push(newQuad);
+                        currentGroup.nrQuads++;
 
                         break;
                     }
+
+
+
+                    // TODO: POLY
+                    case 1: {
+                        throw new Error("TODO");
+                    }
+                    // TODO: PN TRI
                     case 9: {
                         throw new Error("TODO");
                     }
+                    // TODO: PN QUAD
                     case 10: {
                         throw new Error("TODO");
                     }
@@ -240,20 +316,22 @@ class BvLoader extends Loader {
             }
         }
 
-        // remove the default unnamed group if it went unused
+        // Remove the default unnamed group if it wasn't used (i.e., every patch
+        // in the model was part of some named group)
         if (unnamed.patches.length === 0) {
             groups.splice(0, 1);
         }
 
-        // now that parsing is done, create all the BvGroups in this file
-        const bvFile = new Group();
-        for (const group of groups) {
-            // TODO
-            // console.log(group.name, group.patches);
-            console.log(group.name);
-            bvFile.add(new BvGroup(group.name, group.patches, this.renderer));
-        }
-        return bvFile;
+        // Sort in descending order of patch degree
+        allQuads.sort((a, b) => (b.uDeg * b.vDeg) - (a.uDeg * a.vDeg));
+
+        console.timeEnd('text parsing');
+
+        const totalNumPatches = allQuads.length + allTris.length + allPolys.length;
+        console.log(`${totalNumPatches} patches in the model.`);
+
+        const bvModel = new BvModel(allQuads, allTris, allPolys, groups);
+        return bvModel;
     }
 }
 
