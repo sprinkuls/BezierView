@@ -35,63 +35,56 @@ export class BvQuad {
 
     }
 
+    // TODO: should we just do this on the GPU?
     getIndexBuffer(subdivLevel, arrayToWriteTo, firstIdxToWriteTo) {
 
-        const key = `${subdivLevel}`;
-        if (!(key in BvQuad.indexBuffers)) {
-            // console.log(`Quad index buffer cache miss: level ${key}`)
+        // data stored in u-major order
+        //
+        //    2   5
+        //     x---x
+        //     |   |
+        //    1|  4|
+        //     x---x
+        //  ^  |   |
+        //  | 0|  3|
+        //  v  x---x
+        //   u ->
+        //
 
-            /*
-             * data stored in u-major order
-             *
-             *    2   5
-             *     x---x
-             *     |   |
-             *    1|  4|
-             *     x---x
-             *  ^  |   |
-             *  | 0|  3|
-             *  v  x---x
-             *   u ->
-             */
+        const quadsPerDim = 1 << subdivLevel; // 2^n
 
-            const quadsPerDim = 1 << subdivLevel; // 2^n
-            // how many indices you have to jump to move over 1 in the u direction
-            const bufferWidth = quadsPerDim + 1;
-            const indices = new Uint32Array(quadsPerDim * quadsPerDim * 6);
+        // how many indices you have to jump to move over 1 in the u direction
+        const bufferWidth = quadsPerDim + 1;
 
-            let idx = 0;
-            for (let i = 0; i < quadsPerDim; i++) {
-                for (let j = 0; j < quadsPerDim; j++) {
+        let idx = firstIdxToWriteTo;
+        let offset = this.buffersByLevel[subdivLevel].indexOffset;
+        for (let i = 0; i < quadsPerDim; i++) {
+            for (let j = 0; j < quadsPerDim; j++) {
 
-                    const bottomLeft    = (bufferWidth * (i))     + j;
-                    const bottomRight   = (bufferWidth * (i))     + j + 1;
-                    const topLeft       = (bufferWidth * (i + 1)) + j;
-                    const topRight      = (bufferWidth * (i + 1)) + j + 1;
+                const base = offset + (bufferWidth * i);
+                const bottomLeft    = base + j;
+                const bottomRight   = base + j + 1;
+                const topLeft       = base + bufferWidth + j;
+                const topRight      = base + bufferWidth + j + 1;
+                // const bottomLeft    = offset + (bufferWidth * (i))     + j;
+                // const bottomRight   = offset + (bufferWidth * (i))     + j + 1;
+                // const topLeft       = offset + (bufferWidth * (i + 1)) + j;
+                // const topRight      = offset + (bufferWidth * (i + 1)) + j + 1;
 
-                    // Triangle 1
-                    indices[idx++] = topLeft;
-                    indices[idx++] = bottomRight;
-                    indices[idx++] = bottomLeft;
-                    // Triangle 2
-                    indices[idx++] = topLeft;
-                    indices[idx++] = topRight;
-                    indices[idx++] = bottomRight;
-                }
+                // Triangle 1
+                arrayToWriteTo[idx++] = topLeft;
+                arrayToWriteTo[idx++] = bottomRight;
+                arrayToWriteTo[idx++] = bottomLeft;
+                // Triangle 2
+                arrayToWriteTo[idx++] = topLeft;
+                arrayToWriteTo[idx++] = topRight;
+                arrayToWriteTo[idx++] = bottomRight;
             }
-            BvQuad.indexBuffers[key] = indices;
-        }
-
-
-        // only add offset after caching the generated indices
-        for (let i = 0; i < BvQuad.indexBuffers[key].length; i++) {
-            const val = BvQuad.indexBuffers[key][i] + this.buffersByLevel[subdivLevel].indexOffset;
-            arrayToWriteTo[firstIdxToWriteTo + i] = val;
         }
     }
 
 
-    vPass({rsrc, pass, currentLevel, targetLevel}) {
+    vPass({rsrc, scratchBuffer, pass, currentLevel, targetLevel}) {
         const nqpd = 1 << currentLevel;
 
         const vShaderInvocations = ((nqpd*this.uDeg)+1)*nqpd;
@@ -110,6 +103,9 @@ export class BvQuad {
             vPassInfo
         );
 
+
+        // console.log(`this.byteSize:   ${this.byteSize}`);
+        // console.log(`this.byteOffset: ${this.byteOffset}`);
         const vBindGroup = rsrc.device.createBindGroup({
             label: `V Bind group for (u=${this.uDeg}, v=${this.vDeg}, cL=${currentLevel}, tL=${targetLevel})`,
             layout: rsrc.quad.subdiv.vLayout,
@@ -117,9 +113,9 @@ export class BvQuad {
                 {
                     binding: 0,
                     resource: {
-                        buffer: rsrc.honkinBuffer,
-                        size:   this.byteSize,
-                        offset: this.byteOffset,
+                        buffer: scratchBuffer,
+                        // size:   this.byteSize,
+                        // offset: this.byteOffset,
                     }
                 },
                 {
@@ -141,7 +137,7 @@ export class BvQuad {
 
     }
 
-    uPass({rsrc, pass, currentLevel, targetLevel}) {
+    uPass({rsrc, scratchBuffer, pass, currentLevel, targetLevel}) {
         const nqpd = 1 << currentLevel;
 
         const uShaderInvocations = ((nqpd*this.vDeg*2)+1)*nqpd;
@@ -167,9 +163,9 @@ export class BvQuad {
                 {
                     binding: 0,
                     resource: {
-                        buffer: rsrc.honkinBuffer,
-                        size:   this.byteSize,
-                        offset: this.byteOffset,
+                        buffer: scratchBuffer,
+                        // size:   this.byteSize,
+                        // offset: this.byteOffset,
                     }
                 },
                 {
@@ -190,7 +186,7 @@ export class BvQuad {
     // 1. copy the position from the scratch buffer to, well, the position buffer
     // 2. calculate the normal, write to normal buffer
     // 3. calculate the curvature, write to curvature buffer
-    evaluate({rsrc, pass, currentLevel, targetLevel}) {
+    evaluate({rsrc, scratchBuffer, pass, currentLevel, targetLevel}) {
 
         ////////////////////
         // Create a uniform buffer that holds:
@@ -233,9 +229,9 @@ export class BvQuad {
                 {
                     binding: 0,
                     resource: {
-                        buffer: rsrc.honkinBuffer,
-                        size:   this.byteSize,
-                        offset: this.byteOffset,
+                        buffer: scratchBuffer,
+                        // size:   this.byteSize,
+                        // offset: this.byteOffset,
                     }
                 },
                 {

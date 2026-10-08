@@ -207,7 +207,14 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
     };
     displayFolder.add(state, 'patchDetail', detailOptions).name('Patch Detail')
         .setValue(DEFAULT_SUBDIV_LEVEL)
-        .onChange((newLevel) => bvModel.setSubdivLevel(newLevel));
+        .onChange((newLevel) => {
+            const t0 = performance.now();
+            const pr =
+            bvModel.setSubdivLevel(newLevel).then(() => {
+                const t1 = performance.now();
+                console.log(`SM: entire setSubdivLevel finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
+            })
+        });
 
 
 

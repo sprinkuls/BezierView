@@ -6,6 +6,8 @@ import {rsrc} from "./rsrc.js";
 
 // TODO: yeah probably a better way to do this
 const DEBUG_MODE = false;
+// TODO: sync value with stateManager.js
+const DEFAULT_SUBDIV_LEVEL = 2;
 
 export class BvModel extends THREE.Group {
 
@@ -22,10 +24,6 @@ export class BvModel extends THREE.Group {
         this.allQuads = allQuads;
         this.allTris = allTris;
         this.allPolys = allPolys;
-
-        // TODO: don't get this from rsrc probably!
-        // biiiig GPUBuffer that's used when we need to subdivide patches
-        this.honkinBuffer = rsrc.honkinBuffer;
 
         // level that's currently shown on screen (e.g. '2' for 4x4, '3' for 8x8)
         this.displayedLevel = -1;
@@ -83,7 +81,27 @@ export class BvModel extends THREE.Group {
             console.log(this.groups);
         }
 
-        this.setSubdivLevel(0);
+        //====================
+        // Pre-allocate buffers up to some reasonable size
+        // 
+        //====================
+        this.allocatedLevel = -1;
+
+        // basic heuristic to decide how many buffers get allocated up front
+        const SIZE_THRESHOLD = 100_000_000;
+        let preallocLevel;
+
+        // evil k&r-esque loop; stop once a level is greater than SIZE_THRESHOLD
+        for (
+            preallocLevel = DEFAULT_SUBDIV_LEVEL;
+            this.allQuads.length * (((1 << (preallocLevel+1))+ 1) * ((1 << (preallocLevel+1))+ 1) *  16) < SIZE_THRESHOLD &&
+            preallocLevel <= 6;
+            preallocLevel++
+        );
+
+        const largestSize = this.allQuads.length * (((1 << preallocLevel)+ 1) * ((1 << preallocLevel)+ 1) * 3 * 16);
+        console.log(`Pre-allocating through to level ${preallocLevel} (${largestSize} bytes)`);
+        this.allocChunks(preallocLevel);
     }
 
     setSubdivLevel(newLevel) {
@@ -93,7 +111,7 @@ export class BvModel extends THREE.Group {
         if (newLevel === this.displayedLevel) {
             // I'm not sure if lilgui lets this happen, but guard against changing the level
             // to what it's already set to
-            return;
+            return Promise.resolve();
         } else if (newLevel <= this.computedLevel) {
             // Already have positions/normals/curvatures/indices calculated for this level,
             // so only need to change which meshes are displayed
@@ -111,164 +129,15 @@ export class BvModel extends THREE.Group {
             // this.computedLevel = this.displayedLevel = newLevel;
             this.displayedLevel = newLevel;
 
-            return;
+            return Promise.resolve();
         }
+        // Now past the early returns, so need to do all the work to subdivide the model
 
         ////////////////////
-        // Now past the early returns, so need to do all the work to subdivide the model
-        //
         // 1. Create, for every chunk of every group, index/pos/normal/curvature buffer
         ////////////////////
-        {
-            const maxChunkSize = rsrc.adapter.limits.maxStorageBufferBindingSize;
+        this.allocChunks(newLevel);
 
-            for (const [name, group] of Object.entries(this.groups)) {
-                console.log(`creating buffers for group: ${name}`);
-
-                // Loop for all values between the highest computed, and newly set, level
-                // e.g. if our highest computed level is 3, and user just set level to 5,
-                // need to create buffers for BOTH levels 4 and 5
-                for (let i = this.computedLevel+1; i <= newLevel; i++) {
-
-                    ////////////////////
-                    // 1. Figure out number of chunks needed to store P/N/C. This is
-                    //    bounded by the storage buffer size
-                    ////////////////////
-
-                    // for e.g. level 2 (aka 4x4) this gives (5*5 vec4) * (4 f32) * (4 bytes/f32)
-                    const quadByteSize = ((1 << i)+1) * ((1 << i)+1) * 4 * 4;
-                    // ((2^i)+1)-th triangle number, e.g. level 3 (aka 8x8) = ((2^3)+1) = 9th triangle nr
-                    const triByteSize  = (((1 << i)+1) * ((1 << i)+2)) >> 1;
-
-                    let currentChunk = Chunk();
-                    group.chunksByLevel[i] = [ currentChunk ];
-
-                    let byteOffset = 0;
-                    for (const patch of group.allPatches) {
-                        let patchByteSize;
-                        if (patch instanceof BvQuad) {
-                            patchByteSize = quadByteSize;
-                        } else if (patch instanceof BvTri) {
-                            patchByteSize = triByteSize;
-                        }
-
-                        // If the current chunk won't have enough room for this patch,
-                        // create a new chunk, and put this patch in it
-                        if (byteOffset + patchByteSize > maxChunkSize) {
-                            currentChunk = Chunk();
-                            group.chunksByLevel[i].push(currentChunk);
-
-                            byteOffset = 0;
-                        }
-
-                        patch.buffersByLevel[i] = {
-                            indexOffset: byteOffset >> 4,
-                            parentChunk: currentChunk
-                        }
-
-                        currentChunk.patches.push(patch);
-                        currentChunk.byteSize += patchByteSize;
-
-                        byteOffset += patchByteSize;
-
-                        // TODO: this feels a bit hack
-                        if (patch instanceof BvQuad) {
-                            currentChunk.nrQuads++;
-                        } else if (patch instanceof BvTri) {
-                            currentChunk.nrTris++;
-                        }
-                    }
-
-                    ////////////////////
-                    // 2. Now that we know how many chunks we need,
-                    //    create index/P/N/C buffers for each chunk
-                    ////////////////////
-
-                    // (number of quads) * (2 tris per quad) * (3 indicies per tri)
-                    const indicesPerQuad = ((1 << i) * (1 << i)) * 2 * 3;
-                    // (number of tris)  * (3 indicies per tri)
-                    const indicesPerTri  = ((1 << i) * (1 << i)) * 3;
-
-                    for (const chunk of group.chunksByLevel[i]) {
-
-                        //////////
-                        // Index buffer for whole chunk
-                        //////////
-                        const nrOfIndices =
-                            (chunk.nrQuads * indicesPerQuad) +
-                            (chunk.nrTris  * indicesPerTri);
-                        const indices = new Uint32Array(nrOfIndices);
-
-                        let idx = 0;
-                        for (const patch of chunk.patches) {
-                            patch.getIndexBuffer(i, indices, idx);
-
-                            // TODO: this feels a bit hack
-                            if (patch instanceof BvQuad) {
-                                idx += indicesPerQuad;
-                            } else if (patch instanceof BvTri) {
-                                idx += indicesPerTri;
-                            }
-                        }
-                        const indexBuffer = new THREE.Uint32BufferAttribute(indices, 1);
-                        chunk.indexBuffer = indexBuffer;
-                        chunk.threeJSMesh.geometry.setIndex(indexBuffer);
-                        chunk.threeJSMesh.geometry.index.version++;
-
-                        //////////
-                        // P/N/C buffers for whole chunk
-                        //////////
-
-                        // Positions
-                        const positionBuffer = new THREE.StorageBufferAttribute(
-                            chunk.byteSize >> 4,
-                            4,
-                        );
-                        chunk.threeJSMesh.geometry.setAttribute("position", positionBuffer);
-                        rsrc.backend.createStorageAttribute(
-                            chunk.threeJSMesh.geometry.getAttribute("position")
-                        );
-                        chunk.positionBuffer = rsrc.backend.get(
-                            chunk.threeJSMesh.geometry.getAttribute("position")
-                        ).buffer;
-
-                        // Normals
-                        const normalBuffer = new THREE.StorageBufferAttribute(
-                            chunk.byteSize >> 4,
-                            4,
-                        );
-                        chunk.threeJSMesh.geometry.setAttribute("normal", normalBuffer);
-                        rsrc.backend.createStorageAttribute(
-                            chunk.threeJSMesh.geometry.getAttribute("normal")
-                        );
-                        chunk.normalBuffer = rsrc.backend.get(
-                            chunk.threeJSMesh.geometry.getAttribute("normal")
-                        ).buffer;
-
-                        // Curvature
-                        const curvatureBuffer = new THREE.StorageBufferAttribute(
-                            chunk.byteSize >> 4,
-                            3,
-                        );
-                        chunk.threeJSMesh.geometry.setAttribute("curvature", curvatureBuffer);
-                        rsrc.backend.createStorageAttribute(
-                            chunk.threeJSMesh.geometry.getAttribute("curvature")
-                        );
-                        chunk.curvatureBuffer = rsrc.backend.get(
-                            chunk.threeJSMesh.geometry.getAttribute("curvature")
-                        ).buffer;
-
-                        //////////
-                        // Set material
-                        //////////
-                        chunk.threeJSMesh.material = group.wireframeMaterial;
-                        // chunk.threeJSMesh.material = group.regularMaterial;
-                    }
-
-                }
-
-            }
-        }
 
         ////////////////////
         // 2. Now that index and p/n/c buffers have all been created, get to actually subdivide
@@ -291,98 +160,53 @@ export class BvModel extends THREE.Group {
                 label: `setLevel pass (lvl ${newLevel}) `,
             });
 
+            // TODO: error handling for out of memory
+            const desiredSize = 100_000_000;
+            const MY_SCRATCH = rsrc.device.createBuffer({
+                label: `subdiv scratch buffer`,
+                size: Math.min(rsrc.adapter.limits.maxBufferSize, desiredSize),
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: false,
+            });
+            console.log(`setSubdivLevel: allocated a ${MY_SCRATCH.size / 1_000_000} MB scratch buffer`);
 
             ////////////////////
             // Quads
             ////////////////////
             {
-
-                let phases = [];
-                let currentPhase = [];
-                phases.push(currentPhase);
-
-                let byteOffset = 0;
+                // stupid mode (tested and it's just faster to change pipelines for each patch)
                 for (const quad of this.allQuads) {
-                    let quadByteSize =
-                        ((quad.uDeg * (1 << newLevel)) + 1) *
-                            ((quad.vDeg * (1 << newLevel)) + 1) *
-                            4 * 4;
+                    for (let currentLevel = 0; currentLevel < newLevel; currentLevel++){
+                        pass.setPipeline(rsrc.quad.subdiv.vPipeline);
+                        quad.vPass({
+                            rsrc,
+                            scratchBuffer: MY_SCRATCH,
+                            pass,
+                            currentLevel,
+                            targetLevel: newLevel
+                        });
 
-                    // need to align to 256 bytes to use as offset/size (by spec)
-                    const remainder = quadByteSize & (255); // mod by 256
-                    if (remainder !== 0) {
-                        quadByteSize = ((quadByteSize >> 8) + 1) * 256;
-                        // console.log(`size: ${quadByteSize} (a: ${a}, rem: ${remainder})`);
-                    }
+                        pass.setPipeline(rsrc.quad.subdiv.uPipeline);
+                        quad.uPass({
+                            rsrc,
+                            scratchBuffer: MY_SCRATCH,
+                            pass,
+                            currentLevel,
+                            targetLevel: newLevel
+                        });
 
-                    // no scratch mean new phase must begin
-                    if (byteOffset + quadByteSize > this.honkinBuffer.size) {
-                    // TODO: TESTING: 128MB demo size
-                    // if (byteOffset + quadByteSize > 134_217_728) {
-                        currentPhase = [];
-                        phases.push(currentPhase);
 
-                        byteOffset = 0;
-                    }
-
-                    // store byte offset into honkin buffer, and how large this patch is
-                    // TODO: possibly problematic to store this on patches themselves, since
-                    // can become out of date
-                    quad.byteOffset = byteOffset;
-                    quad.byteSize = quadByteSize;
-                    currentPhase.push(quad);
-
-                    byteOffset += quadByteSize;
-                }
-
-                ////////////////////
-                // Quad phases have been created, so we can now move to dispatching shaders
-                ////////////////////
-                console.log(`${phases.length} compute phases needed to subdivide to level ${newLevel}`);
-                for (const phase of phases) {
-                    // console.log('Phase:');
-                    // console.log(phase);
-
-                    // TODO: this
-                    // we kinda have stupid special case for when level is 0
-                    if (newLevel === 0) {
-                        pass.setPipeline(rsrc.quad.evaluate.pipeline);
-                        for (const quad of phase) {
+                        // "don't re-calculate normals/curvature for a level we've already
+                        // calculated them for"
+                        if (currentLevel+1 > this.computedLevel) {
+                            pass.setPipeline(rsrc.quad.evaluate.pipeline);
                             quad.evaluate({
                                 rsrc,
+                                scratchBuffer: MY_SCRATCH,
                                 pass,
-                                currentLevel: 0,
+                                currentLevel: currentLevel+1,
                                 targetLevel: newLevel
                             });
-                        }
-                    } else {
-                        // loop for all levels fun fun fun
-                        for (let currentLevel = 0; currentLevel < newLevel; currentLevel++) {
-
-                            // < do ALL v passes at once >
-                            pass.setPipeline(rsrc.quad.subdiv.vPipeline);
-                            for (const quad of phase) {
-                                quad.vPass({rsrc, pass, currentLevel, targetLevel: newLevel});
-                            }
-
-                            // < do ALL u passes at once >
-                            pass.setPipeline(rsrc.quad.subdiv.uPipeline);
-                            for (const quad of phase) {
-                                quad.uPass({rsrc, pass, currentLevel, targetLevel: newLevel});
-                            }
-
-                            // < do ALL evaluation at once >
-                            // idea with currentLevel+1 is just that we've already subdivided the
-                            // patch, so now the level has in fact increased
-                            pass.setPipeline(rsrc.quad.evaluate.pipeline);
-                            for (const quad of phase) {
-                                quad.evaluate({
-                                    rsrc,
-                                    pass,
-                                    currentLevel: currentLevel+1,
-                                    targetLevel: newLevel
-                                });
-                            }
                         }
                     }
                 }
@@ -401,37 +225,36 @@ export class BvModel extends THREE.Group {
             //////////
             pass.end();
             const commandBuffer = encoder.finish();
-
-            const t0 = performance.now();
             rsrc.device.queue.submit([commandBuffer]);
+            MY_SCRATCH.destroy(); console.log("Scratch memory freed.");
 
-            rsrc.device.queue.onSubmittedWorkDone().then(() => {
-                const t1 = performance.now();
-                console.log(`GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
+            if (DEBUG_MODE) {
+                rsrc.device.queue.onSubmittedWorkDone().then(() => {
+                    // Retain sanity by copying back the position buffers for debugging
+                    if (DEBUG_MODE) {
+                        for (const [name, group] of Object.entries(this.groups)) {
+                            const firstChunk = group.chunksByLevel[newLevel][0];
 
-                // Retain sanity by copying back the position buffers for debugging
-                if (DEBUG_MODE) {
-                    for (const [name, group] of Object.entries(this.groups)) {
-                        const firstChunk = group.chunksByLevel[newLevel][0];
+                            rsrc.renderer.getArrayBufferAsync(
+                                firstChunk.threeJSMesh.geometry.getAttribute("position")
+                            ).then((rawBuffer) => {
+                                    console.log(`Running position buffer copy for group "${name}"...`);
+                                    const fullArray = new Float32Array(rawBuffer);
+                                    console.log(fullArray);
+                                    console.log(`Its index buffer:`);
+                                    console.log(firstChunk.threeJSMesh.geometry.index);
+                                    // take small piece out for inspection?
+                                    // const arr = Array.from(new Float32Array(rawBuffer));
+                                    // console.log(arr.slice(52, Math.ceil((151 + 1) / 100) * 100));
+                                    console.log(firstChunk.threeJSMesh);
+                                    firstChunk.threeJSMesh.geometry.attributes['position'].array = fullArray;
+                                });
+                        }
 
-                        rsrc.renderer.getArrayBufferAsync(
-                            firstChunk.threeJSMesh.geometry.getAttribute("position")
-                        ).then((rawBuffer) => {
-                                console.log(`Running position buffer copy for group "${name}"...`);
-                                const fullArray = new Float32Array(rawBuffer);
-                                console.log(fullArray);
-                                console.log(`Its index buffer:`);
-                                console.log(firstChunk.threeJSMesh.geometry.index);
-                                // take small piece out for inspection?
-                                // const arr = Array.from(new Float32Array(rawBuffer));
-                                // console.log(arr.slice(52, Math.ceil((151 + 1) / 100) * 100));
-                                console.log(firstChunk.threeJSMesh);
-                                firstChunk.threeJSMesh.geometry.attributes['position'].array = fullArray;
-                        });
                     }
 
-                }
-            });
+                });
+            }
         }
 
         ////////////////////
@@ -452,7 +275,271 @@ export class BvModel extends THREE.Group {
         // we're done done done!
         this.computedLevel = this.displayedLevel = newLevel;
 
-        return;
+        const t0 = performance.now();
+        return rsrc.device.queue.onSubmittedWorkDone().then(() => {
+            const t1 = performance.now();
+            console.log(`SSL: GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
+        });
+    }
+
+    // create, and force a zeroing of, the chunks for levels above 'this.allocatedLevel'
+    // and through to 'newLevel'
+    //
+    // e.g. calling this with this.allocatedLevel=3 and newLevel=6,
+    // buffers will be created for levels 4, 5, and 6
+    // (0-3 get skipped since they already exist)
+    allocChunks(newLevel) {
+        // "Do allocations through THREE, or manually?"
+        //
+        // the issue with using THREE for allocations is: whenever you create
+        // a StorageBufferAttribute, THREE will ALWAYS create a CPU-side buffer of the same size,
+        // and will ALWAYS copy it to the GPU. this makes buffer creation slower than it should
+        // be in cases where you don't actually have anything to copy.
+        const USE_THREE_ALLOC = false;
+        let encoder;
+        if (!USE_THREE_ALLOC) {
+            encoder = rsrc.device.createCommandEncoder({label: "buffer init. encoder"});
+        }
+
+
+        const t0 = performance.now();
+        if (this.allocatedLevel >= newLevel) {
+            return;
+        }
+
+        const maxChunkSize = rsrc.adapter.limits.maxStorageBufferBindingSize;
+
+        for (const [name, group] of Object.entries(this.groups)) {
+            console.group(`Creating buffers for group: ${name}`);
+
+            // Loop for all values between the highest computed, and newly set, level
+            // e.g. if our highest computed level is 3, and user just set level to 5,
+            // need to create buffers for BOTH levels 4 and 5
+            for (let i = this.allocatedLevel+1; i <= newLevel; i++) {
+
+                ////////////////////
+                // 1. Figure out number of chunks needed to store P/N/C. This is
+                //    bounded by the storage buffer size
+                ////////////////////
+
+                // for e.g. level 2 (aka 4x4) this gives (5*5 vec4) * (4 f32) * (4 bytes/f32)
+                const quadByteSize = ((1 << i)+1) * ((1 << i)+1) * 4 * 4;
+                // ((2^i)+1)-th triangle number, e.g. level 3 (aka 8x8) = ((2^3)+1) = 9th triangle nr
+                const triByteSize  = (((1 << i)+1) * ((1 << i)+2)) >> 1;
+
+                let currentChunk = Chunk();
+                group.chunksByLevel[i] = [ currentChunk ];
+
+                let byteOffset = 0;
+                for (const patch of group.allPatches) {
+                    let patchByteSize;
+                    if (patch instanceof BvQuad) {
+                        patchByteSize = quadByteSize;
+                    } else if (patch instanceof BvTri) {
+                        patchByteSize = triByteSize;
+                    }
+
+                    // If the current chunk won't have enough room for this patch,
+                    // create a new chunk, and put this patch in it
+                    if (byteOffset + patchByteSize > maxChunkSize) {
+                        currentChunk = Chunk();
+                        group.chunksByLevel[i].push(currentChunk);
+
+                        byteOffset = 0;
+                    }
+
+                    patch.buffersByLevel[i] = {
+                        indexOffset: byteOffset >> 4,
+                        parentChunk: currentChunk
+                    }
+
+                    currentChunk.patches.push(patch);
+                    currentChunk.byteSize += patchByteSize;
+
+                    byteOffset += patchByteSize;
+
+                    // TODO: this feels a bit hack
+                    if (patch instanceof BvQuad) {
+                        currentChunk.nrQuads++;
+                    } else if (patch instanceof BvTri) {
+                        currentChunk.nrTris++;
+                    }
+                }
+
+                ////////////////////
+                // 2. Now that we know how many chunks we need,
+                //    create index/P/N/C buffers for each chunk
+                ////////////////////
+
+                // (number of quads) * (2 tris per quad) * (3 indicies per tri)
+                const indicesPerQuad = ((1 << i) * (1 << i)) * 2 * 3;
+                // (number of tris)  * (3 indicies per tri)
+                const indicesPerTri  = ((1 << i) * (1 << i)) * 3;
+
+                for (const chunk of group.chunksByLevel[i]) {
+
+                    //========================================
+                    // P/N/C buffers for whole chunk
+                    //========================================
+                    const t0_pnc = performance.now();
+                    {
+                        if (USE_THREE_ALLOC) {
+
+                            // Positions
+                            const positionBuffer = new THREE.StorageBufferAttribute(
+                                chunk.byteSize >> 4,
+                                4,
+                            );
+                            chunk.threeJSMesh.geometry.setAttribute("position", positionBuffer);
+                            rsrc.backend.createStorageAttribute(
+                                chunk.threeJSMesh.geometry.getAttribute("position")
+                            );
+                            chunk.positionBuffer = rsrc.backend.get(
+                                chunk.threeJSMesh.geometry.getAttribute("position")
+                            ).buffer;
+
+                            // Normals
+                            const normalBuffer = new THREE.StorageBufferAttribute(
+                                chunk.byteSize >> 4,
+                                4,
+                            );
+                            chunk.threeJSMesh.geometry.setAttribute("normal", normalBuffer);
+                            rsrc.backend.createStorageAttribute(
+                                chunk.threeJSMesh.geometry.getAttribute("normal")
+                            );
+                            chunk.normalBuffer = rsrc.backend.get(
+                                chunk.threeJSMesh.geometry.getAttribute("normal")
+                            ).buffer;
+
+                            // Curvature
+                            const curvatureBuffer = new THREE.StorageBufferAttribute(
+                                chunk.byteSize >> 4,
+                                4,
+                            );
+                            chunk.threeJSMesh.geometry.setAttribute("curvature", curvatureBuffer);
+                            rsrc.backend.createStorageAttribute(
+                                chunk.threeJSMesh.geometry.getAttribute("curvature")
+                            );
+                            chunk.curvatureBuffer = rsrc.backend.get(
+                                chunk.threeJSMesh.geometry.getAttribute("curvature")
+                            ).buffer;
+                        } else {
+                            // Positions
+                            chunk.positionBuffer = rsrc.device.createBuffer({
+                                label: `position buffer (lvl ${i})`,
+                                size : chunk.byteSize,
+                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                                mappedAtCreation: false,
+                            });
+
+                            const threePosBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                            threePosBuf.count = chunk.byteSize >> 4;
+
+                            rsrc.backend.get(threePosBuf).buffer = chunk.positionBuffer;
+
+                            chunk.threeJSMesh.geometry.boundingSphere =
+                                new THREE.Sphere(new THREE.Vector3(), 1);
+                            chunk.threeJSMesh.geometry.setAttribute("position", threePosBuf);
+
+
+
+                            // Normals
+                            chunk.normalBuffer = rsrc.device.createBuffer({
+                                label: `normal buffer (lvl ${i})`,
+                                size : chunk.byteSize,
+                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                                mappedAtCreation: false,
+                            });
+                            const threeNormalBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                            threeNormalBuf.count = chunk.byteSize >> 4;
+
+                            rsrc.backend.get(threeNormalBuf).buffer = chunk.normalBuffer;
+                            chunk.threeJSMesh.geometry.setAttribute("normal", threeNormalBuf);
+
+
+                            // Curvature
+                            chunk.curvatureBuffer = rsrc.device.createBuffer({
+                                label: `curvature buffer (lvl ${i})`,
+                                size : chunk.byteSize,
+                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                                mappedAtCreation: false,
+                            });
+                            const threeCurvBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                            threeCurvBuf.count = chunk.byteSize >> 4;
+
+                            rsrc.backend.get(threeCurvBuf).buffer = chunk.curvatureBuffer;
+                            chunk.threeJSMesh.geometry.setAttribute("curvature", threeCurvBuf);
+
+                            ///////////
+                            ///////////
+                            encoder.clearBuffer(chunk.positionBuffer);
+                            encoder.clearBuffer(chunk.normalBuffer);
+                            encoder.clearBuffer(chunk.curvatureBuffer);
+                        }
+                    }
+                    const t1_pnc = performance.now();
+                    console.log(`PNC: ${t1_pnc - t0_pnc} ms (${chunk.byteSize} bytes = ${chunk.byteSize / 1_000_000} MB) (level ${i})`);
+
+                    //========================================
+                    // Index buffer for whole chunk
+                    //========================================
+                    {
+                        // const t0_idx = performance.now();
+
+                        const nrOfIndices =
+                            (chunk.nrQuads * indicesPerQuad) +
+                            (chunk.nrTris  * indicesPerTri);
+                        const indices = new Uint32Array(nrOfIndices);
+
+                        let idx = 0;
+                        for (const patch of chunk.patches) {
+                            patch.getIndexBuffer(i, indices, idx);
+
+                            // TODO: this feels a bit hack
+                            if (patch instanceof BvQuad) {
+                                idx += indicesPerQuad;
+                            } else if (patch instanceof BvTri) {
+                                idx += indicesPerTri;
+                            }
+                        }
+                        // const ty = performance.now();
+                        // console.log(`${ty-t0_idx}ms to do CPU IB creation`);
+
+                        const indexBuffer = new THREE.Uint32BufferAttribute(indices, 1);
+                        chunk.indexBuffer = indexBuffer;
+                        chunk.threeJSMesh.geometry.setIndex(indexBuffer);
+                        chunk.threeJSMesh.geometry.index.version++;
+                        const t1_idx = performance.now();
+                        // console.log(`IDX: ${t1_idx - t0_idx} ms (${nrOfIndices * 4} bytes = ${(nrOfIndices * 4) / 1_000_000} MB) (level ${i})`);
+
+                    }
+
+                    //========================================
+                    // Set material for whole chunk
+                    //========================================
+                    chunk.threeJSMesh.material = group.regularMaterial;
+
+                }
+
+            }
+
+            console.groupEnd();
+        }
+        const t1 = performance.now();
+        console.log(`allocChunks took ${(t1 - t0).toFixed(2)} ms (created buffers for levels ${this.allocatedLevel+1}-${newLevel})`);
+
+        this.allocatedLevel = newLevel;
+        if (!USE_THREE_ALLOC) {
+            console.log("CLEARING BUFFERS...");
+            const t0 = performance.now();
+            rsrc.device.queue.submit([encoder.finish()]);
+            return rsrc.device.queue.onSubmittedWorkDone().then(() => {
+                const t1 = performance.now();
+                console.log(`BUFFER CLEAR took ${(t1 - t0).toFixed(2)} ms`);
+            })
+        } else {
+            return Promise.resolve();
+        }
     }
 
 
@@ -468,7 +555,7 @@ export class BvModel extends THREE.Group {
                 patch.patchUniformBuffer.destroy();
             }
 
-            // for each LEVEL
+            // "for each level, destroy each chunk"
             for (const chunkArray of Object.values(group.chunksByLevel)) {
                 for (const chunk of chunkArray) {
                     chunk.threeJSMesh.geometry.dispose();

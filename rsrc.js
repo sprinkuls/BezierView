@@ -52,14 +52,6 @@ export async function init(renderer, adapter) {
     const device = backend.device;
     rsrc.device = device;
 
-    // TODO: error handling for out of memory
-    const desiredSize = 536_870_912; // 512 MB
-    rsrc.honkinBuffer = device.createBuffer({
-        label: `big honkin scratch buffer`,
-        size: Math.min(adapter.limits.maxBufferSize, desiredSize),
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        mappedAtCreation: false,
-    });
     console.log('after alloc');
 
     // ========================================
