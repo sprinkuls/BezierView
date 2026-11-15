@@ -29,6 +29,7 @@
             }
         }
         </script>
+        <script src="lib/ipass/ipass.js"></script>
         <!-- <script type="module" src = "stateManager.js"></script> -->
         <script type="module">
         import * as THREE from 'three/webgpu';
@@ -37,6 +38,7 @@
         import {BvLoader} from './BvLoader.js';
         import Stats from 'stats-gl';
         import * as Rsrc from './rsrc.js';
+        import {ipassSurface} from './IpassSurface.js';
 
 
         let camera, scene, renderer, light1, light2, light3, controls, time = 0;
@@ -111,6 +113,7 @@
 
             stats.init(renderer);
             await Rsrc.init(renderer, adapter);
+            await ipassSurface.init(renderer.backend.device, renderer.domElement);
 
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -162,6 +165,9 @@
             // render
             renderer.resolveTimestampsAsync( THREE.TimestampQuery.RENDER );
             renderer.render( scene, camera );
+            // this does entirely render over the rest of the scene
+            // but no real better way of doing it (unless i can hook into the THREE render pass?)
+            ipassSurface.render(camera);
         }
 
         init();

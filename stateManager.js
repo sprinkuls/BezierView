@@ -2,6 +2,7 @@ import { GUI } from 'lil-gui';
 import * as THREE from 'three/webgpu';
 import {BvLoader} from './BvLoader.js';
 import {rsrc} from './rsrc.js';
+import {ipassSurface} from './IpassSurface.js';
 
 const gui = new GUI();
 const controllers = [];
@@ -33,6 +34,7 @@ const state = {
     light3: true,
     boundingBox: false,
     patchDetail: 2,
+    surfaceRenderer: 'Subdivision', // 'Subdivision' for OG, 'iPASS' for new
 
     // Help
     helpDummy: 0,
@@ -216,6 +218,9 @@ function setupGui({scene, renderer, light1, light2, light3, initBvFile}) {
             })
         });
 
+    displayFolder.add(state, 'surfaceRenderer', ['Subdivision', 'iPASS']).name('Surface Renderer')
+        .onChange(applySurfaceRenderer);
+
 
 
     ////////////////////////////// 'Groups'
@@ -348,6 +353,18 @@ function addBvModel(text) {
     // TODO: TESTING: UNCOMMENT THIS
     bvModel.setSubdivLevel(DEFAULT_SUBDIV_LEVEL);
     scene_.add(bvModel);
+
+    ipassSurface.load(text);
+    applySurfaceRenderer(state.surfaceRenderer);
+}
+
+// show either the subdivision meshes or the iPASS surface
+function applySurfaceRenderer(mode) {
+    const useIpass = mode === 'iPASS';
+    ipassSurface.enabled = useIpass;
+    if (bvModel) {
+        bvModel.visible = !useIpass;
+    }
 }
 
 
