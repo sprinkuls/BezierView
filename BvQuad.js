@@ -2,14 +2,7 @@ import * as THREE from 'three/webgpu';
 import { vec3, storage, Fn, If, Loop, equal, notEqual, uniform, instanceIndex, objectWorldMatrix, color, screenUV, attribute, mul, add, sub, div, mod, shiftLeft, shiftRight, floor, abs, uint, int, float} from 'three/tsl';
 
 
-// TODO: when profiling either compute shader, the thing actually taking the most time
-// (and by no small amount) is just memory accesses, since we keep reading/writing directly
-// to the position buffer. seems to be roughly a 3 : 1 ratio of memory : calculations,
-// address that!
-// i believe there should be a way to e.g. 
 export class BvQuad {
-
-    static indexBuffers = {};
 
     /**
      * @param {int} patchType
@@ -32,7 +25,6 @@ export class BvQuad {
         //     indexOffset: <int>,
         // }
         this.buffersByLevel = {};
-
     }
 
     // TODO: should we just do this on the GPU?
@@ -83,105 +75,6 @@ export class BvQuad {
         }
     }
 
-
-    vPass({rsrc, scratchBuffer, pass, currentLevel, targetLevel}) {
-        const nqpd = 1 << currentLevel;
-
-        const vShaderInvocations = ((nqpd*this.uDeg)+1)*nqpd;
-        const vPassInfo = new Uint32Array([
-            vShaderInvocations,
-            currentLevel,
-            targetLevel
-        ]);
-        const vPassInfoBuffer = rsrc.device.createBuffer({
-            size: vPassInfo.byteLength,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        rsrc.device.queue.writeBuffer(
-            vPassInfoBuffer,
-            0,
-            vPassInfo
-        );
-
-
-        // console.log(`this.byteSize:   ${this.byteSize}`);
-        // console.log(`this.byteOffset: ${this.byteOffset}`);
-        const vBindGroup = rsrc.device.createBindGroup({
-            label: `V Bind group for (u=${this.uDeg}, v=${this.vDeg}, cL=${currentLevel}, tL=${targetLevel})`,
-            layout: rsrc.quad.subdiv.vLayout,
-            entries: [
-                {
-                    binding: 0,
-                    resource: {
-                        buffer: scratchBuffer,
-                        // size:   this.byteSize,
-                        // offset: this.byteOffset,
-                    }
-                },
-                {
-                    binding: 1,
-                    resource: this.cpBuffer,
-                },
-                {
-                    binding: 2,
-                    resource: this.patchUniformBuffer 
-                },
-                {
-                    binding: 3,
-                    resource: vPassInfoBuffer
-                },
-            ]
-        });
-        pass.setBindGroup(0, vBindGroup);
-        pass.dispatchWorkgroups(Math.ceil(vShaderInvocations / 64)); // (workgroup size is 64)
-
-    }
-
-    uPass({rsrc, scratchBuffer, pass, currentLevel, targetLevel}) {
-        const nqpd = 1 << currentLevel;
-
-        const uShaderInvocations = ((nqpd*this.vDeg*2)+1)*nqpd;
-        const uPassInfo = new Uint32Array([
-            uShaderInvocations,
-            currentLevel,
-            targetLevel
-        ]);
-        const uPassInfoBuffer = rsrc.device.createBuffer({
-            size: uPassInfo.byteLength,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        rsrc.device.queue.writeBuffer(
-            uPassInfoBuffer,
-            0,
-            uPassInfo
-        );
-
-        const uBindGroup = rsrc.device.createBindGroup({
-            label: `U Bind group for (u=${this.uDeg}, v=${this.vDeg}, cL=${currentLevel}, tL=${targetLevel})`,
-            layout: rsrc.quad.subdiv.uLayout,
-            entries: [
-                {
-                    binding: 0,
-                    resource: {
-                        buffer: scratchBuffer,
-                        // size:   this.byteSize,
-                        // offset: this.byteOffset,
-                    }
-                },
-                {
-                    binding: 1,
-                    resource: this.patchUniformBuffer
-                },
-                {
-                    binding: 2,
-                    resource: uPassInfoBuffer
-                },
-            ]
-        });
-        pass.setBindGroup(0, uBindGroup);
-        pass.dispatchWorkgroups(Math.ceil(uShaderInvocations / 64)); // (workgroup size is 64)
-    }
-
     // this will (in the shader):
     // 1. copy the position from the scratch buffer to, well, the position buffer
     // 2. calculate the normal, write to normal buffer
@@ -226,14 +119,6 @@ export class BvQuad {
             label: `'Evaluate' bind group for (${this.uDeg}, ${this.vDeg})`,
             layout: rsrc.quad.evaluate.bindGroupLayout,
             entries: [
-                {
-                    binding: 0,
-                    resource: {
-                        buffer: scratchBuffer,
-                        // size:   this.byteSize,
-                        // offset: this.byteOffset,
-                    }
-                },
                 {
                     binding: 1,
                     resource: this.buffersByLevel[currentLevel].parentChunk.positionBuffer,

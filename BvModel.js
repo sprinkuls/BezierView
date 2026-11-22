@@ -83,7 +83,6 @@ export class BvModel extends THREE.Group {
 
         //====================
         // Pre-allocate buffers up to some reasonable size
-        // 
         //====================
         this.allocatedLevel = -1;
 
@@ -133,25 +132,10 @@ export class BvModel extends THREE.Group {
         }
         // Now past the early returns, so need to do all the work to subdivide the model
 
-        ////////////////////
         // 1. Create, for every chunk of every group, index/pos/normal/curvature buffer
-        ////////////////////
         this.allocChunks(newLevel);
 
-
-        ////////////////////
-        // 2. Now that index and p/n/c buffers have all been created, get to actually subdivide
-        ////////////////////
-
-        // TLDR-ish summary: basically, we can only use a finite amount of memory at a time,
-        // and subdividing needs a lot of it. to avoid running out of memory, one big
-        // buffer is shared between patches. each patch gets some piece of this buffer
-        // to use as scratch, with all pieces being disjoint.
-        // it's likely that this buffer won't have enough room for all the shaders to run
-        // at once, so the idea is that we break the execution into 'phases'. basically,
-        // if we run out of scratch space, but still have shaders to run, we run all the
-        // shaders that fit (a 'phase'), and once those finish we then re-distribute pieces
-        // of that buffer to the shaders that have yet to run. rinse repeat until all run.
+        // 2. Now that index and p/n/c buffers have all been created we can subdivide
         {
             const encoder = rsrc.device.createCommandEncoder({
                 label: `setLevel encoder (lvl ${newLevel}) `,
@@ -160,54 +144,19 @@ export class BvModel extends THREE.Group {
                 label: `setLevel pass (lvl ${newLevel}) `,
             });
 
-            // TODO: error handling for out of memory
-            const desiredSize = 100_000_000;
-            const MY_SCRATCH = rsrc.device.createBuffer({
-                label: `subdiv scratch buffer`,
-                size: Math.min(rsrc.adapter.limits.maxBufferSize, desiredSize),
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-                mappedAtCreation: false,
-            });
-            console.log(`setSubdivLevel: allocated a ${MY_SCRATCH.size / 1_000_000} MB scratch buffer`);
-
             ////////////////////
             // Quads
             ////////////////////
             {
-                // stupid mode (tested and it's just faster to change pipelines for each patch)
+                pass.setPipeline(rsrc.quad.evaluate.pipeline);
                 for (const quad of this.allQuads) {
-                    for (let currentLevel = 0; currentLevel < newLevel; currentLevel++){
-                        pass.setPipeline(rsrc.quad.subdiv.vPipeline);
-                        quad.vPass({
+                    for (let curLevel = this.computedLevel+1; curLevel <= newLevel; curLevel++){
+                        quad.evaluate({
                             rsrc,
-                            scratchBuffer: MY_SCRATCH,
                             pass,
-                            currentLevel,
+                            currentLevel: curLevel,
                             targetLevel: newLevel
                         });
-
-                        pass.setPipeline(rsrc.quad.subdiv.uPipeline);
-                        quad.uPass({
-                            rsrc,
-                            scratchBuffer: MY_SCRATCH,
-                            pass,
-                            currentLevel,
-                            targetLevel: newLevel
-                        });
-
-
-                        // "don't re-calculate normals/curvature for a level we've already
-                        // calculated them for"
-                        if (currentLevel+1 > this.computedLevel) {
-                            pass.setPipeline(rsrc.quad.evaluate.pipeline);
-                            quad.evaluate({
-                                rsrc,
-                                scratchBuffer: MY_SCRATCH,
-                                pass,
-                                currentLevel: currentLevel+1,
-                                targetLevel: newLevel
-                            });
-                        }
                     }
                 }
             }
@@ -226,7 +175,6 @@ export class BvModel extends THREE.Group {
             pass.end();
             const commandBuffer = encoder.finish();
             rsrc.device.queue.submit([commandBuffer]);
-            MY_SCRATCH.destroy(); console.log("Scratch memory freed.");
 
             if (DEBUG_MODE) {
                 rsrc.device.queue.onSubmittedWorkDone().then(() => {
