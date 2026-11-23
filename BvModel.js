@@ -9,7 +9,7 @@ const DEBUG_MODE = false;
 // TODO: sync value with stateManager.js
 const DEFAULT_SUBDIV_LEVEL = 2;
 
-export class BvModel extends THREE.Group {
+export class BvModel {
 
     /**
      * @param {[BvQuad]} allQuads
@@ -19,7 +19,7 @@ export class BvModel extends THREE.Group {
      * @param {Array<{name: string, patches: Array<(BvQuad | BvTri)>}>} patchesByGroup
      */
     constructor(allQuads, allTris, allPolys, patchesByGroup) {
-        super();
+        // super();
 
         this.allQuads = allQuads;
         this.allTris = allTris;
@@ -65,8 +65,8 @@ export class BvModel extends THREE.Group {
             this.groups[group.name] = {
                 allPatches: group.patches,
 
-                regularMaterial: regularMaterial,
-                wireframeMaterial: wireframeMaterial,
+                // regularMaterial: regularMaterial,
+                // wireframeMaterial: wireframeMaterial,
 
                 // This is like a map of <subdiv level> to <array of chunks>, e.g.:
                 // chunksByLevel[0] = [ <chunk> ]
@@ -75,6 +75,9 @@ export class BvModel extends THREE.Group {
             }
             groupNr++;
         }
+        // is this stupid? kinda
+        this.groupNames = Object.keys(this.groups);
+        console.log(this.groupNames);
 
         if (DEBUG_MODE) {
             console.log("Groups in BvModel, right after creation:");
@@ -114,16 +117,6 @@ export class BvModel extends THREE.Group {
         } else if (newLevel <= this.computedLevel) {
             // Already have positions/normals/curvatures/indices calculated for this level,
             // so only need to change which meshes are displayed
-
-            // inherited THREE.Group method, remove all meshes from this group
-            this.clear();
-
-            for (const group of Object.values(this.groups)) {
-                for (const chunk of group.chunksByLevel[newLevel]) {
-                    // inherited THREE.Group method, add mesh to this group
-                    this.add(chunk.threeJSMesh);
-                }
-            }
 
             // this.computedLevel = this.displayedLevel = newLevel;
             this.displayedLevel = newLevel;
@@ -184,18 +177,17 @@ export class BvModel extends THREE.Group {
                             const firstChunk = group.chunksByLevel[newLevel][0];
 
                             rsrc.renderer.getArrayBufferAsync(
-                                firstChunk.threeJSMesh.geometry.getAttribute("position")
+                                firstChunk.geometry.getAttribute("position")
                             ).then((rawBuffer) => {
                                     console.log(`Running position buffer copy for group "${name}"...`);
                                     const fullArray = new Float32Array(rawBuffer);
                                     console.log(fullArray);
                                     console.log(`Its index buffer:`);
-                                    console.log(firstChunk.threeJSMesh.geometry.index);
+                                    console.log(firstChunk.geometry.index);
                                     // take small piece out for inspection?
                                     // const arr = Array.from(new Float32Array(rawBuffer));
                                     // console.log(arr.slice(52, Math.ceil((151 + 1) / 100) * 100));
-                                    console.log(firstChunk.threeJSMesh);
-                                    firstChunk.threeJSMesh.geometry.attributes['position'].array = fullArray;
+                                    firstChunk.geometry.attributes['position'].array = fullArray;
                                 });
                         }
 
@@ -205,30 +197,31 @@ export class BvModel extends THREE.Group {
             }
         }
 
-        ////////////////////
-        // Update which meshes are shown
-        // (remove those from the lower subdiv level, and now show this level's meshes)
-        ////////////////////
-
-        // inherited THREE.Group method, remove all meshes from this group
-        this.clear();
-
-        for (const group of Object.values(this.groups)) {
-            for (const chunk of group.chunksByLevel[newLevel]) {
-                // inherited THREE.Group method, add mesh to this group
-                this.add(chunk.threeJSMesh);
-            }
-        }
-
         // we're done done done!
         this.computedLevel = this.displayedLevel = newLevel;
 
         const t0 = performance.now();
         return rsrc.device.queue.onSubmittedWorkDone().then(() => {
             const t1 = performance.now();
-            console.log(`SSL: GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
+            console.log(`setSubdivLevel: GPU side finished in ${(t1 - t0).toFixed(2)} ms (set level to ${newLevel})`);
         });
     }
+
+
+    // TODO: yeah this is lazy hehe
+    async getChunksByGroup(level) {
+        await this.setSubdivLevel(level);
+        const ret = {};
+        // idea is we just set up <name, [array of chunks]> pairs
+        for (const [name, group] of Object.entries(this.groups)) {
+            console.log("copying:")
+            console.log(group.chunksByLevel[level]);
+
+            ret[name] = group.chunksByLevel[level];
+        }
+        return ret;
+    }
+
 
     // create, and force a zeroing of, the chunks for levels above 'this.allocatedLevel'
     // and through to 'newLevel'
@@ -237,23 +230,15 @@ export class BvModel extends THREE.Group {
     // buffers will be created for levels 4, 5, and 6
     // (0-3 get skipped since they already exist)
     allocChunks(newLevel) {
-        // "Do allocations through THREE, or manually?"
-        //
-        // the issue with using THREE for allocations is: whenever you create
-        // a StorageBufferAttribute, THREE will ALWAYS create a CPU-side buffer of the same size,
-        // and will ALWAYS copy it to the GPU. this makes buffer creation slower than it should
-        // be in cases where you don't actually have anything to copy.
-        const USE_THREE_ALLOC = false;
         let encoder;
-        if (!USE_THREE_ALLOC) {
             encoder = rsrc.device.createCommandEncoder({label: "buffer init. encoder"});
-        }
 
 
-        const t0 = performance.now();
         if (this.allocatedLevel >= newLevel) {
             return;
         }
+
+        let t0 = performance.now();
 
         const maxChunkSize = rsrc.adapter.limits.maxStorageBufferBindingSize;
 
@@ -331,99 +316,57 @@ export class BvModel extends THREE.Group {
                     //========================================
                     const t0_pnc = performance.now();
                     {
-                        if (USE_THREE_ALLOC) {
+                        // Positions
+                        chunk.positionBuffer = rsrc.device.createBuffer({
+                            label: `position buffer (lvl ${i})`,
+                            size : chunk.byteSize,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                            mappedAtCreation: false,
+                        });
 
-                            // Positions
-                            const positionBuffer = new THREE.StorageBufferAttribute(
-                                chunk.byteSize >> 4,
-                                4,
-                            );
-                            chunk.threeJSMesh.geometry.setAttribute("position", positionBuffer);
-                            rsrc.backend.createStorageAttribute(
-                                chunk.threeJSMesh.geometry.getAttribute("position")
-                            );
-                            chunk.positionBuffer = rsrc.backend.get(
-                                chunk.threeJSMesh.geometry.getAttribute("position")
-                            ).buffer;
+                        const threePosBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                        threePosBuf.count = chunk.byteSize >> 4;
 
-                            // Normals
-                            const normalBuffer = new THREE.StorageBufferAttribute(
-                                chunk.byteSize >> 4,
-                                4,
-                            );
-                            chunk.threeJSMesh.geometry.setAttribute("normal", normalBuffer);
-                            rsrc.backend.createStorageAttribute(
-                                chunk.threeJSMesh.geometry.getAttribute("normal")
-                            );
-                            chunk.normalBuffer = rsrc.backend.get(
-                                chunk.threeJSMesh.geometry.getAttribute("normal")
-                            ).buffer;
+                        rsrc.backend.get(threePosBuf).buffer = chunk.positionBuffer;
 
-                            // Curvature
-                            const curvatureBuffer = new THREE.StorageBufferAttribute(
-                                chunk.byteSize >> 4,
-                                4,
-                            );
-                            chunk.threeJSMesh.geometry.setAttribute("curvature", curvatureBuffer);
-                            rsrc.backend.createStorageAttribute(
-                                chunk.threeJSMesh.geometry.getAttribute("curvature")
-                            );
-                            chunk.curvatureBuffer = rsrc.backend.get(
-                                chunk.threeJSMesh.geometry.getAttribute("curvature")
-                            ).buffer;
-                        } else {
-                            // Positions
-                            chunk.positionBuffer = rsrc.device.createBuffer({
-                                label: `position buffer (lvl ${i})`,
-                                size : chunk.byteSize,
-                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-                                mappedAtCreation: false,
-                            });
-
-                            const threePosBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
-                            threePosBuf.count = chunk.byteSize >> 4;
-
-                            rsrc.backend.get(threePosBuf).buffer = chunk.positionBuffer;
-
-                            chunk.threeJSMesh.geometry.boundingSphere =
-                                new THREE.Sphere(new THREE.Vector3(), 1);
-                            chunk.threeJSMesh.geometry.setAttribute("position", threePosBuf);
+                        chunk.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
+                        chunk.geometry.setAttribute("position", threePosBuf);
 
 
 
-                            // Normals
-                            chunk.normalBuffer = rsrc.device.createBuffer({
-                                label: `normal buffer (lvl ${i})`,
-                                size : chunk.byteSize,
-                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-                                mappedAtCreation: false,
-                            });
-                            const threeNormalBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
-                            threeNormalBuf.count = chunk.byteSize >> 4;
+                        // Normals
+                        chunk.normalBuffer = rsrc.device.createBuffer({
+                            label: `normal buffer (lvl ${i})`,
+                            size : chunk.byteSize,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                            mappedAtCreation: false,
+                        });
+                        const threeNormalBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                        threeNormalBuf.count = chunk.byteSize >> 4;
 
-                            rsrc.backend.get(threeNormalBuf).buffer = chunk.normalBuffer;
-                            chunk.threeJSMesh.geometry.setAttribute("normal", threeNormalBuf);
+                        rsrc.backend.get(threeNormalBuf).buffer = chunk.normalBuffer;
+
+                        chunk.geometry.setAttribute("normal", threeNormalBuf);
 
 
-                            // Curvature
-                            chunk.curvatureBuffer = rsrc.device.createBuffer({
-                                label: `curvature buffer (lvl ${i})`,
-                                size : chunk.byteSize,
-                                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-                                mappedAtCreation: false,
-                            });
-                            const threeCurvBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
-                            threeCurvBuf.count = chunk.byteSize >> 4;
+                        // Curvature
+                        chunk.curvatureBuffer = rsrc.device.createBuffer({
+                            label: `curvature buffer (lvl ${i})`,
+                            size : chunk.byteSize,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                            mappedAtCreation: false,
+                        });
+                        const threeCurvBuf = new THREE.StorageBufferAttribute(new Float32Array(4), 4);
+                        threeCurvBuf.count = chunk.byteSize >> 4;
 
-                            rsrc.backend.get(threeCurvBuf).buffer = chunk.curvatureBuffer;
-                            chunk.threeJSMesh.geometry.setAttribute("curvature", threeCurvBuf);
+                        rsrc.backend.get(threeCurvBuf).buffer = chunk.curvatureBuffer;
+                        chunk.geometry.setAttribute("curvature", threeCurvBuf);
 
-                            ///////////
-                            ///////////
-                            encoder.clearBuffer(chunk.positionBuffer);
-                            encoder.clearBuffer(chunk.normalBuffer);
-                            encoder.clearBuffer(chunk.curvatureBuffer);
-                        }
+                        ///////////
+                        ///////////
+                        encoder.clearBuffer(chunk.positionBuffer);
+                        encoder.clearBuffer(chunk.normalBuffer);
+                        encoder.clearBuffer(chunk.curvatureBuffer);
                     }
                     const t1_pnc = performance.now();
                     console.log(`PNC: ${t1_pnc - t0_pnc} ms (${chunk.byteSize} bytes = ${chunk.byteSize / 1_000_000} MB) (level ${i})`);
@@ -455,39 +398,29 @@ export class BvModel extends THREE.Group {
 
                         const indexBuffer = new THREE.Uint32BufferAttribute(indices, 1);
                         chunk.indexBuffer = indexBuffer;
-                        chunk.threeJSMesh.geometry.setIndex(indexBuffer);
-                        chunk.threeJSMesh.geometry.index.version++;
+
+                        chunk.geometry.setIndex(indexBuffer);
+                        chunk.geometry.index.version++;
                         const t1_idx = performance.now();
                         // console.log(`IDX: ${t1_idx - t0_idx} ms (${nrOfIndices * 4} bytes = ${(nrOfIndices * 4) / 1_000_000} MB) (level ${i})`);
 
                     }
-
-                    //========================================
-                    // Set material for whole chunk
-                    //========================================
-                    chunk.threeJSMesh.material = group.regularMaterial;
-
                 }
-
             }
 
             console.groupEnd();
         }
-        const t1 = performance.now();
+        let t1 = performance.now();
         console.log(`allocChunks took ${(t1 - t0).toFixed(2)} ms (created buffers for levels ${this.allocatedLevel+1}-${newLevel})`);
 
         this.allocatedLevel = newLevel;
-        if (!USE_THREE_ALLOC) {
-            console.log("CLEARING BUFFERS...");
-            const t0 = performance.now();
-            rsrc.device.queue.submit([encoder.finish()]);
-            return rsrc.device.queue.onSubmittedWorkDone().then(() => {
-                const t1 = performance.now();
-                console.log(`BUFFER CLEAR took ${(t1 - t0).toFixed(2)} ms`);
-            })
-        } else {
-            return Promise.resolve();
-        }
+        console.log("CLEARING BUFFERS...");
+        t0 = performance.now();
+        rsrc.device.queue.submit([encoder.finish()]);
+        return rsrc.device.queue.onSubmittedWorkDone().then(() => {
+            const t1 = performance.now();
+            console.log(`BUFFER CLEAR took ${(t1 - t0).toFixed(2)} ms`);
+        })
     }
 
 
@@ -506,7 +439,7 @@ export class BvModel extends THREE.Group {
             // "for each level, destroy each chunk"
             for (const chunkArray of Object.values(group.chunksByLevel)) {
                 for (const chunk of chunkArray) {
-                    chunk.threeJSMesh.geometry.dispose();
+                    chunk.geometry.dispose();
                 }
             }
         }
@@ -527,7 +460,8 @@ function Chunk() {
         normalBuffer   : -1,
         curvatureBuffer: -1,
 
-        threeJSMesh: new THREE.Mesh(),
+        geometry:   new THREE.BufferGeometry,
+        // threeJSMesh: new THREE.Mesh(),
 
         // will be assigned to a storageBufferAttribute once needed size is known
         positionStorage: -1,

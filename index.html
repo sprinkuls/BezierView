@@ -1,11 +1,9 @@
-<!DOCTYPE html>
+<!--<!DOCTYPE html>
 <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Bezier View</title>
-        <!-- prefetch the default model that will be displayed on application startup -->
-        <link rel="preload" href="/data/5/logo.bv" as="fetch" crossorigin>
+        <title>bv.js TRUE REBORN EDITION</title>
     </head>
     <body>
         <div id="container"></div>
@@ -29,142 +27,50 @@
             }
         }
         </script>
-        <!-- <script type="module" src = "stateManager.js"></script> -->
-        <script type="module">
-        import * as THREE from 'three/webgpu';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import {state, setupGui} from './stateManager.js';
-        import {BvLoader} from './BvLoader.js';
-        import Stats from 'stats-gl';
-        import * as Rsrc from './rsrc.js';
+        <script type="module" src="main.js"> </script>
+    </body>
+</html>-->
+
+<!doctype html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="style.css" />
+
+        <!-- prefetch the default model (displayed on application startup) -->
+        <link rel="preload" href="/data/5/logo.bv" as="fetch" crossorigin />
 
 
-        let camera, scene, renderer, light1, light2, light3, controls, time = 0;
-        const timer = new THREE.Timer();
-        let gui;
-        let stats;
-
-        // holds the full file that was loaded, not just one patch. this is a THREE group
-        // that contains BvGroup objects for each "Group" listed in the .bv file
-        let bvFile;
-
-        // TODO: much of this state is tied to what the default GUI settings are
-        // (e.g., if a light is turned on/off by default), but that connection
-        // isn't anywhere in code. maybe export a "default options" object
-        // in stateManager and then, based on those options, either turn these things
-        // on or off?
-        async function init() {
-            // ==================== Stats ====================
-            stats = new Stats({ trackGPU: true, });
-            document.body.appendChild(stats.dom);
-
-            // ==================== Camera ====================
-            camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
-            camera.position.set( - 5, 5, 5 );
-
-
-            // ==================== Scene ====================
-            scene = new THREE.Scene();
-            // scene.background = new THREE.Color( 0xeeeeee );
-            // scene.background = new THREE.Color( 0x333333 );
-            scene.background = new THREE.Color( 0x1c1b1a);
-            const gridHelper = new THREE.PolarGridHelper(2, 16);
-            scene.add(gridHelper);
-
-
-            // ==================== Lights ====================
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight)
-
-            light1 = new THREE.DirectionalLight( 0xffffff, 5 );
-            light1.position.set( 1, 1, 1 );
-            scene.add( light1 );
-
-            light2 = new THREE.DirectionalLight( 0xffffff, 0 );
-            light2.position.set( -1.41, 1, 0 );
-            scene.add( light2 );
-
-            light3 = new THREE.DirectionalLight( 0xffffff, 5 );
-            light3.position.set( 1, 1, -1 );
-            scene.add( light3 );
-
-            // ==================== Renderer ====================
-            const adapter = await navigator.gpu.requestAdapter();
-            console.log(`maxBufferSize: ${adapter.limits.maxBufferSize}`)
-            console.log(`maxStorageBufferBindingSize: ${adapter.limits.maxStorageBufferBindingSize}`)
-            console.log(`minStorageBufferOffsetAlignment: ${adapter.limits.minStorageBufferOffsetAlignment}`)
-
-            // renderer = new THREE.WebGPURenderer({ trackTimestamp: false, antialias: true });
-            renderer = new THREE.WebGPURenderer({
-                requiredLimits: {
-                    maxBufferSize: adapter.limits.maxBufferSize,
-                    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-                },
-                trackTimestamp: false,
-                antialias: false,
-            });
-            await renderer.init();
-
-            if (renderer.backend.isWebGPUBackend === false){
-                throw new Error('WebGPU is not supported by your browser');
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "./node_modules/three/build/three.webgpu.js",
+                    "three/webgpu": "./node_modules/three/build/three.webgpu.js",
+                    "three/tsl": "./node_modules/three/build/three.tsl.js",
+                    "three/addons/": "./node_modules/three/examples/jsm/",
+                    "lil-gui": "./node_modules/lil-gui/dist/lil-gui.esm.js",
+                    "stats-gl": "./node_modules/stats-gl/dist/main.js"
+                }
             }
-
-            stats.init(renderer);
-            await Rsrc.init(renderer, adapter);
-
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setAnimationLoop(animate);
-            container.appendChild(renderer.domElement);
-
-            // ==================== Controls ====================
-            controls = new OrbitControls(camera, renderer.domElement);
-            // //TESTING: remove this
-            // controls.autoRotate = true;
-            // controls.autoRotateSpeed = 2.0;
-
-            // ==================== Events ====================
-            window.addEventListener('resize', onWindowResize);
-
-            // ==================== GUI / State manager ====================
-            gui = setupGui({
-                scene: scene,
-                renderer: renderer,
-                light1: light1,
-                light2: light2,
-                light3: light3,
-                initBvFile: './data/5/logo.bv'
-                // initBvFile: './data/8/rat1.bv'
-                // initBvFile: './data/4/tpt_grp.bv'
-                // initBvFile: './data/may/deg_1x1_quad.bv'
-            });
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize( window.innerWidth, window.innerHeight );
-        }
-
-        function animate() {
-            render();
-        }
-
-        function render() {
-            timer.update()
-            const delta = timer.getDelta();
-            time += delta;
-
-            // TESTING: remove this
-            controls.update();
-            stats.update();
-
-            // render
-            renderer.resolveTimestampsAsync( THREE.TimestampQuery.RENDER );
-            renderer.render( scene, camera );
-        }
-
-        init();
         </script>
+
+        <script type="module" src="./main.js"></script>
+
+        <title>bv.js</title>
+
+    </head>
+    <body>
+        <div id="everything-container">
+            <main id="pane-container">
+                <!--meow (panes go here)-->
+            </main>
+
+            <aside id="side-panel">
+                <header>
+                </header>
+                <!--meow (gui controls go here)-->
+            </aside>
+        </div>
     </body>
 </html>

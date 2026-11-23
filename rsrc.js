@@ -37,7 +37,6 @@ export async function init(renderer, adapter) {
     const device = backend.device;
     rsrc.device = device;
 
-    console.log('after alloc');
 
     // ========================================
     // BvQuad resources
@@ -58,9 +57,4 @@ export async function init(renderer, adapter) {
         },
     });
     rsrc.quad.evaluate.bindGroupLayout = rsrc.quad.evaluate.pipeline.getBindGroupLayout(0);
-
-
-    // ========================================
-    // BvQuad resources
-    // ========================================
 }
